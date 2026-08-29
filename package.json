@@ -1,0 +1,23 @@
+{
+  "name": "snacktime-backend",
+  "version": "1.0.0",
+  "description": "On-premises MySQL and Node.js backend for SNACK TIME",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csurf": "^1.11.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.9.7",
+    "nodemailer": "^6.9.13",
+    "socket.io": "^4.7.5"
+  }
+}

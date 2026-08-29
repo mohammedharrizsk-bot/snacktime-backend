@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Test Card Details</title>
+    <meta name="description" content="Test cards for Razorpay payment flow.">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#FF6B35">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="SNACK TIME">
+    <link rel="apple-touch-icon" href="snacktime-logo.png">
+    <link rel="stylesheet" href="styles.css?v=2">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        .test-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.9rem;
+        }
+        .test-table th, .test-table td {
+            border: 1px solid var(--border-color);
+            padding: 0.5rem;
+            text-align: left;
+        }
+        .test-table th {
+            background: var(--bg-secondary);
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <h1>Test Card Details</h1>
+    </header>
+    <main class="content">
+        <section>
+            <h2>Test Card Details</h2>
+            <p>You can test the payment flow using our test cards.</p>
+            
+            <div style="background: #fff3cd; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                <strong>⚠️ WARN – Watch Out!</strong>
+                <ul>
+                    <li>You can use these test cards to make payments in <strong>test</strong> mode only.</li>
+                    <li>Test mode features a mock bank page with <strong>Success</strong> and <strong>Failure</strong> buttons to replicate the live payment experience.</li>
+                    <li>No real money is deducted due to the usage of test API keys. This is a simulated transaction.</li>
+                    <li>If you use these test cards for <strong>live</strong> mode payments, an error message will be displayed.</li>
+                </ul>
+            </div>
+
+            <h3>To use the test card details:</h3>
+            <ol>
+                <li>At the Checkout, select Card as the payment method.</li>
+                <li>Enter the <strong>OTP</strong> to access saved cards if required.</li>
+                <li>Enter the card details.</li>
+                <li>Enter any random CVV.</li>
+                <li>Enter any future date as the expiry date.</li>
+                <li>Click <strong>Pay</strong>. A sample payment page is displayed.
+                    <ul>
+                        <li>Enter a random <strong>OTP</strong> between 4 to 10 digits to make the payment successful and click <strong>Submit</strong>.</li>
+                        <li>Enter a random <strong>OTP</strong> below 4 digits to fail the payment and click <strong>Submit</strong>.</li>
+                    </ul>
+                </li>
+            </ol>
+
+            <h3>Test Cards for Indian Payments</h3>
+            <p>Use the following test cards to test various payment scenarios for Indian payments.</p>
+            <div style="overflow-x: auto;">
+                <table class="test-table">
+                    <thead>
+                        <tr>
+                            <th>Network</th>
+                            <th>Card Number</th>
+                            <th>Card Type</th>
+                            <th>Card Sub Type</th>
+                            <th>CVV & Expiry Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Visa</td><td>4100 2800 0000 1007</td><td>Debit</td><td>Consumer</td><td>Random CVV, future date</td></tr>
+                        <tr><td>Mastercard</td><td>5555 5100 0008 1006</td><td>Credit</td><td>Business</td><td>Random CVV, future date</td></tr>
+                        <tr><td>Mastercard</td><td>5180 2872 0009 1001</td><td>Prepaid</td><td>Consumer</td><td>Random CVV, future date</td></tr>
+                        <tr><td>RuPay</td><td>6527 6589 0000 1005</td><td>Credit</td><td>Consumer</td><td>Random CVV, future date</td></tr>
+                        <tr><td>Diners</td><td>3608 280009 1007</td><td>Credit</td><td>Consumer</td><td>Random CVV, future date</td></tr>
+                        <tr><td>Amex</td><td>3402 560004 01007</td><td>Credit</td><td>Consumer</td><td>Random CVV, future date</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Error Scenarios (BAD_REQUEST_ERROR)</h3>
+            <div style="overflow-x: auto;">
+                <table class="test-table">
+                    <thead>
+                        <tr>
+                            <th>Error reason</th>
+                            <th>Network</th>
+                            <th>Card number</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>payment_timed_out</code></td><td>Visa</td><td>4100 2800 0009 0000</td></tr>
+                        <tr><td><code>insufficient_fund</code></td><td>Visa</td><td>4100 2800 0008 0001</td></tr>
+                        <tr><td><code>payment_cancelled</code></td><td>Visa</td><td>4100 2800 0007 0002</td></tr>
+                        <tr><td><code>card_declined</code></td><td>Visa</td><td>4100 2800 0006 0003</td></tr>
+                        <tr><td><code>card_disabled_for_online_payments</code></td><td>Visa</td><td>4100 2800 0003 0006</td></tr>
+                        <tr><td><code>card_number_invalid</code></td><td>Visa</td><td>4100 2800 0001 0008</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <h3>Error Scenarios (GATEWAY_ERROR)</h3>
+            <div style="overflow-x: auto;">
+                <table class="test-table">
+                    <thead>
+                        <tr>
+                            <th>Error reason</th>
+                            <th>Network</th>
+                            <th>Card number</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>gateway_technical_error</code></td><td>Visa</td><td>4100 2800 0002 0007</td></tr>
+                        <tr><td><code>authentication_failed</code></td><td>Visa</td><td>4100 2800 0000 0009</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Test Cards for International Payments</h3>
+            <div style="overflow-x: auto;">
+                <table class="test-table">
+                    <thead>
+                        <tr>
+                            <th>Card Network</th>
+                            <th>Card Number</th>
+                            <th>CVV & Expiry Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Mastercard</td><td>5555 5555 5555 4444</td><td>Random CVV, future date</td></tr>
+                        <tr><td>Visa</td><td>4012 8888 8888 1881</td><td>Random CVV, future date</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+    <footer class="app-footer">
+        <p>© 2026 Snack Time • All rights reserved</p>
+    </footer>
+    <script src="app.js?v=2"></script>
+</body>
+</html>

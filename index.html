@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>SNACK TIME - Pre-Order App</title>
+    <meta name="description" content="Pre-order your favourite campus snacks at Sri Eshwar College. Skip the queue, enjoy your break!">
+    
+    <!-- PWA Meta Tags -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#166534">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="SNACK TIME">
+    <link rel="apple-touch-icon" href="snacktime-logo.png">
+
+    <link rel="stylesheet" href="styles.css?v=1787935959487">
+    <!-- Design System Fonts: Inter (body) + Poppins (headings) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Translations -->
+    <script src="translations.js?v=1787935959487"></script>
+
+    <!-- Socket.io Real-Time Engine (Ultra-Fast <10ms Commercial WebSockets) -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    
+    <!-- Chart.js CDN for Analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Razorpay Payment Gateway -->
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+    <!-- PWA Service Worker Registration & Instant Auto-Update -->
+    <script>
+    window.SNACKTIME_VERSION = '1.0.8.1787935959487';
+
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      let _swRegistration = null;
+      let refreshing = false;
+
+      function triggerAutoUpdate(waitingSW) {
+        if (window._razorpayActive) return; // Don't interrupt active Razorpay payment
+        if (waitingSW) {
+          try { waitingSW.postMessage({ type: 'SKIP_WAITING' }); } catch (e) {}
+        }
+      }
+
+      function watchRegistration(reg) {
+        if (reg.waiting) {
+          triggerAutoUpdate(reg.waiting);
+        }
+        reg.addEventListener('updatefound', () => {
+          const newSW = reg.installing;
+          if (!newSW) return;
+          newSW.addEventListener('statechange', () => {
+            if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+              triggerAutoUpdate(newSW);
+            }
+          });
+        });
+      }
+
+      // When SW takes control, automatically reload page to run newest code
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!refreshing && !window._razorpayActive) {
+          refreshing = true;
+          console.log('[SNACK TIME] Instant auto-update triggered! Reloading...');
+          window.location.reload();
+        }
+      });
+
+      // Register SW & set aggressive 15-second polling + visibility-change check
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw-v2.js', { updateViaCache: 'none' })
+          .then((reg) => {
+            _swRegistration = reg;
+            console.log('[SNACK TIME] SW registered v' + window.SNACKTIME_VERSION);
+            watchRegistration(reg);
+
+            // 1. Poll for deployment updates every 15 seconds
+            setInterval(() => {
+              reg.update().catch(() => {});
+            }, 15 * 1000);
+
+            // 2. Check for deployment updates whenever tab/PWA becomes active
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'visible') {
+                reg.update().catch(() => {});
+              }
+            });
+          })
+          .catch((err) => console.warn('[SNACK TIME] SW registration notice:', err));
+      });
+    })();
+    </script>
+</head>
+<body>
+    <!-- Welcome Splash Screen -->
+    <div id="splash-screen" class="splash-screen">
+        <div class="splash-content">
+            <div class="splash-logo-container">
+                <img src="snacktime-logo.png" alt="Logo" class="splash-logo" onerror="this.style.display='none'">
+            </div>
+            <h1 class="splash-title">SNACK TIME</h1>
+            <p class="splash-subtitle">Welcome to Sri Eshwar Campus</p>
+            <div class="splash-loader">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container"></div>
+
+    <div id="app">
+        <!-- Global Theme Toggle & PWA Install Button -->
+        <div style="position: fixed; bottom: 80px; right: 20px; z-index: 1000; display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-end;">
+            <button id="pwa-install-btn" onclick="installPWA()" class="primary-btn" style="display: none; padding: 0.6rem 1rem; font-size: 0.85rem; border-radius: 30px; align-items: center; gap: 8px; background: linear-gradient(135deg, #F97316, #EA580C); box-shadow: 0 4px 12px rgba(249,115,22,0.35);">
+                <i data-lucide="download-cloud" style="width:18px;height:18px;"></i> Install App
+            </button>
+            <button id="theme-toggle" onclick="toggleTheme()" style="width:48px;height:48px;border-radius:50%;border:none;background:var(--surface);box-shadow:0 4px 12px rgba(0,0,0,0.15);color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:var(--transition);"><i data-lucide="moon" style="width:20px;height:20px;"></i></button>
+        </div>
+        
+        <!-- ===================== AUTH SCREEN ===================== -->
+        <div id="auth-screen" class="screen active">
+            <header class="landing-header">
+                <div class="header-brand">
+                    <img src="logo.png" alt="Sri Eshwar College Logo" class="college-logo-auth" onerror="this.style.display='none'">
+                    <h2>SNACK TIME</h2>
+                </div>
+            </header>
+            
+            <main class="landing-main">
+                <div class="hero-section">
+                    <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem; color: var(--primary);">
+                        <i data-lucide="pizza" style="width: 48px; height: 48px;"></i>
+                        <i data-lucide="coffee" style="width: 48px; height: 48px;"></i>
+                        <i data-lucide="donut" style="width: 48px; height: 48px;"></i>
+                    </div>
+                    <h1>Skip the line. <br><span style="color: var(--secondary)">Enjoy your break.</span></h1>
+                    <div id="offline-banner" style="display:none; background:#fee2e2; color:#991b1b; padding:10px; border-radius:8px; margin:10px 0; font-size:0.9rem; z-index:99;">
+                        📶 You are currently offline. Browsing cached menu — internet connection is required to place orders.
+                    </div>
+                    <p>Pre-order your favorite campus snacks in real-time.</p>
+                </div>
+
+                <div class="auth-container glass-panel">
+                    <h3 id="auth-title">Login to Order</h3>
+                    
+                    <div class="auth-mode-toggle" style="margin-bottom: 1rem; display: flex; justify-content: center; gap: 1rem; font-size: 0.9rem;">
+                        <label style="cursor: pointer;"><input type="radio" name="auth-mode" value="login" checked onchange="toggleAuthMode()"> Login</label>
+                        <label style="cursor: pointer;"><input type="radio" name="auth-mode" value="register" onchange="toggleAuthMode()"> Register</label>
+                    </div>
+
+                    <div class="auth-tabs" data-role="student">
+                        <button class="tab-btn active" onclick="switchAuthTab('student')">Student/Staff</button>
+                        <button class="tab-btn" onclick="switchAuthTab('vendor')">Vendor</button>
+                    </div>
+                    
+                    <div class="auth-form">
+                        <input type="email" id="email" placeholder="College Email (@sece.ac.in)" style="display: none;" />
+                        <input type="text" id="username" placeholder="Username (e.g. harriz07)" />
+                        <input type="password" id="password" placeholder="Password" />
+                        <p id="login-error" style="color: var(--danger); font-size: 0.85rem; display: none; margin: 0; text-align: left;"></p>
+                        <button id="auth-submit-btn" class="primary-btn" onclick="handleAuth()">Login</button>
+                        <p style="text-align:center; margin: 0; font-size: 0.85rem;">
+                            <span id="forgot-link" style="color: var(--primary); cursor: pointer; text-decoration: underline;" onclick="openForgotPassword()">Forgot Password?</span>
+                        </p>
+                    </div>
+                </div>
+            </main>
+
+            <footer class="landing-footer">
+                <p>&copy; 2026 SNACK TIME - Sri Eshwar College of Engineering. All rights reserved.</p>
+            </footer>
+        </div>
+
+        <!-- ===================== CUSTOMER SCREEN ===================== -->
+        <div id="customer-screen" class="screen">
+            <header>
+                <div class="header-brand">
+                    <h2><i data-lucide="utensils" style="vertical-align: middle; margin-right: 8px;"></i> SNACK TIME</h2>
+                </div>
+                <div class="header-actions">
+                    <!-- Customer Nav Tabs -->
+                    <div class="customer-nav-tabs">
+                        <button class="nav-tab-btn active" id="tab-menu" onclick="switchCustomerTab('menu')"><i data-lucide="layout-grid" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_menu">Menu</span></button>
+                        <button class="nav-tab-btn" id="tab-favourites" onclick="switchCustomerTab('favourites')"><i data-lucide="heart" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_favourites">Favourites</span></button>
+                        <button class="nav-tab-btn" id="tab-recents" onclick="switchCustomerTab('recents')"><i data-lucide="clock" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_recents">Recents</span></button>
+                        <button class="nav-tab-btn" id="tab-history" onclick="switchCustomerTab('history')"><i data-lucide="receipt" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_orders">Orders</span></button>
+                        <button class="nav-tab-btn" id="tab-cart" onclick="showCartModal()"><i data-lucide="shopping-cart" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_cart">Cart</span> <span id="cart-badge" style="background:var(--primary);color:white;padding:2px 8px;border-radius:12px;margin-left:5px;display:none;">0</span></button>
+                        <button class="nav-tab-btn" id="tab-about" onclick="switchCustomerTab('about')"><i data-lucide="info" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_about">About</span></button>
+                    </div>
+                    <button class="icon-btn" onclick="showProfile()" title="My Profile" style="display:flex; align-items:center; gap:6px;"><i data-lucide="user-circle" style="width:18px; height:18px;"></i> <span id="header-username"></span></button>
+                    <button class="outline-btn" onclick="logout()"><i data-lucide="log-out" style="vertical-align: middle; margin-right: 4px; width: 16px; height: 16px;"></i> <span data-i18n="nav_logout">Logout</span></button>
+                </div>
+            </header>
+            <main>
+                <!-- Shop Status Banner -->
+                <div id="shop-status-banner" class="banner" style="display:none; align-items:center; justify-content:center; padding:0.75rem; border-width: 2px; margin-bottom:1rem; border-radius: 12px;">
+                    <span id="shop-status-text" style="font-weight:600; margin-right:0.5rem;"></span>
+                    <strong id="break-countdown" style="font-size:1.1rem; color:var(--text-primary);"></strong>
+                </div>
+
+                <!-- Payment Recovery Banner -->
+                <div id="recovery-banner" class="banner" style="display:none; align-items:center; justify-content:space-between; background:rgba(99,102,241,0.15); border:1px solid var(--primary); margin-bottom:1rem; border-radius: 12px; text-align: left;">
+                    <div>
+                        <strong style="color:var(--primary);">Cart Recovered!</strong><br>
+                        <span style="font-size:0.9rem; color:var(--text-secondary);" id="recovery-items"></span>
+                    </div>
+                    <div style="display:flex; gap:0.5rem;">
+                        <button class="primary-btn" style="padding:0.4rem 0.8rem;" onclick="restorePaymentDraft()">Restore</button>
+                        <button class="outline-btn" style="padding:0.4rem 0.8rem;" onclick="dismissRecovery()">Dismiss</button>
+                    </div>
+                </div>
+
+                <!-- Student Dynamic Greeting Header & Bell -->
+                <div id="student-greeting-bar" class="greeting-bar" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div>
+                        <div id="greeting-time" class="text-meta" style="font-size:12px; color:var(--text-secondary);">Good afternoon</div>
+                        <div id="greeting-user-name" style="font-size:16px; font-weight:600; color:var(--text-primary);">Student</div>
+                    </div>
+                    <button class="icon-btn" onclick="showNotification('No new notifications', 'info')" title="Notifications" style="width:40px; height:40px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center; border:1px solid var(--border);">
+                        <i data-lucide="bell" style="width:18px; height:18px;"></i>
+                    </button>
+                </div>
+
+                <!-- Student Search Bar -->
+                <div class="search-bar-container" style="margin-bottom:20px;">
+                    <div style="position:relative; display:flex; align-items:center;">
+                        <i data-lucide="search" style="position:absolute; left:14px; width:18px; height:18px; color:var(--text-secondary); pointer-events:none;"></i>
+                        <input type="text" id="student-menu-search" placeholder="Search snacks, drinks, offers..." oninput="filterStudentMenu(this.value)" style="padding-left:42px; border-radius:var(--radius-pill); background:var(--surface); border:1px solid var(--border); width:100%;">
+                    </div>
+                </div>
+
+                <!-- Welcome Banner -->
+                <div class="banner">
+                    <div>
+                        <h3 style="margin-bottom:4px;">Hungry? Pre-order now!</h3>
+                        <p style="margin:0; font-size:13px;">Beat the rush hour queues. Order in seconds.</p>
+                    </div>
+                </div>
+
+                <!-- MENU TAB -->
+                <div id="customer-menu-view" class="customer-view active">
+                    <div id="specials-section" style="margin-bottom: 2rem;">
+                        <h3 style="color: var(--secondary); display:flex; align-items:center; gap:8px;">🌟 Today's Specials & Offers</h3>
+                        <div id="specials-grid" class="grid-container"></div>
+                    </div>
+                    <h3>All Snacks</h3>
+                    <div id="menu-grid" class="grid-container"></div>
+                </div>
+
+                <!-- FAVOURITES TAB -->
+                <div id="customer-favourites-view" class="customer-view">
+                    <h3>❤️ My Favourites</h3>
+                    <p style="margin-bottom: 1.5rem;">Items you've hearted show up here for quick ordering.</p>
+                    <div id="favourites-grid" class="grid-container">
+                        <p class="empty-state">No favourites yet. Tap ❤️ on any item to save it here!</p>
+                    </div>
+                </div>
+
+                <!-- RECENTS TAB -->
+                <div id="customer-recents-view" class="customer-view">
+                    <h3>Recently Ordered</h3>
+                    <p style="margin-bottom: 1.5rem;">Your recently ordered items for quick re-order.</p>
+                    <div id="recents-grid" class="grid-container">
+                        <p class="empty-state">No recent orders yet. Place your first order!</p>
+                    </div>
+                </div>
+
+                <!-- ORDERS/HISTORY TAB -->
+                <div id="customer-history-view" class="customer-view">
+                    <h3>My Orders</h3>
+                    <p style="margin-bottom: 1.5rem;">All your past and current orders.</p>
+                    <div id="history-inline-container" style="display: flex; flex-direction: column; gap: 1rem;"></div>
+                </div>
+
+                <!-- ABOUT TAB -->
+                <div id="customer-about-view" class="customer-view">
+                    <div class="about-hero">
+                        <div class="about-logo-ring">
+                            <i data-lucide="utensils" style="width:40px; height:40px; color:white;"></i>
+                        </div>
+                        <h2 class="about-title">SNACK TIME</h2>
+                        <p class="about-subtitle">Sri Eshwar College of Engineering &bull; Campus Canteen Pre-Order System</p>
+                        <p class="about-description">Designed to eliminate long queues and make every break count. Pre-order your favourite campus snacks in seconds — from menu to ready, seamlessly.</p>
+                    </div>
+
+                    <h3 class="about-section-heading"><i data-lucide="users" style="vertical-align:middle; margin-right:8px; width:20px; height:20px;"></i> Meet the Team</h3>
+
+                    <div class="founders-grid">
+                        <!-- Founder -->
+                        <div class="founder-card founder-primary">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #FF6B35, #FF8C69);">
+                                <span>MH</span>
+                            </div>
+                            <div class="founder-badge">Founder</div>
+                            <h4 class="founder-name">Mohamed Harriz</h4>
+                            <p class="founder-handle">@harriz07</p>
+                            <p class="founder-desc">Visionary behind SNACK TIME. Designed the full-stack architecture, UI/UX, real-time order system, and led the project from idea to deployment.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">Full-Stack</span>
+                                <span class="founder-tag">UI/UX</span>
+                                <span class="founder-tag">Architecture</span>
+                            </div>
+                        </div>
+
+                        <!-- Co-Founder 1 -->
+                        <div class="founder-card">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #6366F1, #8B5CF6);">
+                                <span>MM</span>
+                            </div>
+                            <div class="founder-badge founder-badge-co">Co-Founder</div>
+                            <h4 class="founder-name">Mohamed Mubashir</h4>
+                            <p class="founder-handle">@mubashir</p>
+                            <p class="founder-desc">Core contributor to system design, testing, and operations. Helped shape the vendor workflow and order management experience.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">System Design</span>
+                                <span class="founder-tag">Operations</span>
+                                <span class="founder-tag">Testing</span>
+                            </div>
+                        </div>
+
+                        <!-- Co-Founder 2 -->
+                        <div class="founder-card">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #10B981, #059669);">
+                                <span>SG</span>
+                            </div>
+                            <div class="founder-badge founder-badge-co">Co-Founder</div>
+                            <h4 class="founder-name">Shriram G</h4>
+                            <p class="founder-handle">@shriram</p>
+                            <p class="founder-desc">Key contributor to product strategy, user research, and campus outreach. Bridges the gap between student needs and technical implementation.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">Strategy</span>
+                                <span class="founder-tag">Research</span>
+                                <span class="founder-tag">Outreach</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="about-footer-card">
+                        <p><i data-lucide="heart" style="width:14px; height:14px; vertical-align:middle; color:var(--danger);"></i> Built with passion at <strong>Sri Eshwar College of Engineering, Coimbatore</strong></p>
+                        <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-secondary);">SNACK TIME <span id="app-version-student">v1.0.3</span> &bull; 2026 &bull; All rights reserved</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- ===================== CART MODAL ===================== -->
+        <div id="cart-modal" class="modal">
+            <div class="modal-content glass-panel">
+                <span class="close-btn" onclick="hideCart()">&times;</span>
+                <h2>🛒 Your Cart</h2>
+                <div id="cart-items"></div>
+                <div class="cart-summary">
+                    <span>Total:</span>
+                    <span id="cart-total">₹0</span>
+                </div>
+                <button class="primary-btn full-width" onclick="proceedToPayment()">Proceed to Payment</button>
+            </div>
+        </div>
+
+        <!-- ===================== PAYMENT & BILL MODAL ===================== -->
+        <div id="payment-modal" class="modal">
+            <div class="modal-content glass-panel" style="max-width: 400px;">
+                <span class="close-btn" onclick="hidePayment()">&times;</span>
+                <h2 id="payment-title">Payment Gateway</h2>
+                
+                <!-- Step 1: Select Method -->
+                <div id="payment-method-selection">
+                    <div style="text-align:center; margin-bottom:1.5rem;">
+                        <p style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:0.25rem;">Amount to Pay</p>
+                        <p style="font-size:2rem; font-weight:700; color:var(--primary); margin:0;" id="pay-amount">₹0</p>
+                    </div>
+                    <div class="payment-methods">
+                        <button class="pay-btn razorpay-btn" id="razorpay-pay-btn" onclick="initiateRazorpay()">
+                            <img src="https://razorpay.com/favicon.png" alt="" style="width:20px; height:20px; vertical-align:middle; margin-right:8px; border-radius:4px;">
+                            Pay Online (UPI / Card / Net Banking)
+                        </button>
+                        <button class="pay-btn counter-btn" onclick="initiateCounterPayment()">
+                            🏪 Pay at Counter (Cash)
+                        </button>
+                    </div>
+                    <p style="text-align:center; font-size:0.78rem; color:var(--text-secondary); margin-top:1rem;">
+                        🔒 Online payments secured by Razorpay
+                    </p>
+                </div>
+
+                <!-- Step 2: Counter Confirmation Screen -->
+                <div id="counter-confirmation-screen" style="display:none; text-align:center;">
+                    <div style="padding:1rem 0;">
+                        <i data-lucide="store" style="width:48px; height:48px; color:var(--primary); margin-bottom:1rem;"></i>
+                        <h3 style="margin:0 0 0.5rem;">Counter Payment</h3>
+                        <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:1rem;">Pay <strong style="color:var(--primary);" id="counter-pay-amount">₹0</strong> at the counter when you collect your order.</p>
+                        <p style="font-size:0.8rem; color:var(--text-secondary);">⚠️ Counter payments are non-refundable. Your order will be placed immediately.</p>
+                    </div>
+                    <button class="primary-btn full-width" id="confirm-counter-btn" onclick="processCounterPayment()" style="margin-top:1rem;">✅ Confirm Order</button>
+                    <button class="outline-btn full-width" style="margin-top:0.5rem;" onclick="cancelCounterPayment()">Back</button>
+                </div>
+
+                <!-- Step 3: Bill Receipt -->
+                <div id="bill-receipt" style="display: none;">
+                    <h3>🎉 Order Confirmed!</h3>
+                    <!-- Token number shown prominently -->
+                    <div id="token-display" style="background:linear-gradient(135deg,var(--primary),var(--secondary)); border-radius:16px; padding:1.25rem; text-align:center; margin-bottom:1rem;">
+                        <p style="margin:0; font-size:0.8rem; color:rgba(255,255,255,0.8); text-transform:uppercase; letter-spacing:1px;">Your Token Number</p>
+                        <p id="token-number" style="margin:0.25rem 0 0; font-size:2.8rem; font-weight:700; color:white; font-family:var(--font-heading); letter-spacing:4px;">—</p>
+                        <p style="margin:0.25rem 0 0; font-size:0.75rem; color:rgba(255,255,255,0.75);">Show this at the counter to collect your order</p>
+                    </div>
+                    <div class="receipt-details" id="receipt-details"></div>
+                    <button class="primary-btn full-width" id="view-status-btn" onclick="finishOrder()">📦 Track My Order</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== ORDER TRACKING MODAL ===================== -->
+        <div id="tracking-modal" class="modal">
+            <div class="modal-content glass-panel">
+                <span class="close-btn" onclick="hideTracking()">&times;</span>
+                <h2>📦 Order Status</h2>
+                <div class="status-timeline">
+                    <div class="status-step active" id="status-pending">⏳ Pending</div>
+                    <div class="status-step" id="status-preparing">👨‍🍳 Preparing</div>
+                    <div class="status-step" id="status-ready">✅ Ready</div>
+                </div>
+                <p style="margin-top: 1rem;" id="tracking-status-text"></p>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.75rem; background:var(--element-bg); padding:0.75rem 1rem; border-radius:12px; border:1px solid var(--surface-border);">
+                    <span style="font-size:0.85rem; color:var(--text-secondary);">Order ID: <strong id="track-order-id" style="color:var(--text-primary);">#---</strong></span>
+                    <span style="font-size:0.85rem; color:var(--text-secondary);">Token: <strong id="track-order-token" style="color:var(--primary); font-size:1rem;">—</strong></span>
+                </div>
+                <div id="rating-section" style="display:none; margin-top: 1.5rem; text-align: center;">
+                    <h4>Rate your order</h4>
+                    <div class="star-rating" id="star-rating">
+                        <span onclick="rateOrder(1)">⭐</span>
+                        <span onclick="rateOrder(2)">⭐</span>
+                        <span onclick="rateOrder(3)">⭐</span>
+                        <span onclick="rateOrder(4)">⭐</span>
+                        <span onclick="rateOrder(5)">⭐</span>
+                    </div>
+                    <textarea id="feedback-text" placeholder="Leave a comment (optional)..." style="margin-top: 1rem; width: 100%; padding: 0.75rem; border-radius: 10px; border: 1px solid var(--surface-border); background: var(--element-bg); color: var(--text-primary); resize: none;"></textarea>
+                    <button class="primary-btn full-width" style="margin-top: 1rem;" onclick="submitFeedback()">Submit Feedback</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== ORDER HISTORY MODAL ===================== -->
+        <div id="history-modal" class="modal">
+            <div class="modal-content glass-panel" style="max-width: 600px;">
+                <span class="close-btn" onclick="hideOrderHistory()">&times;</span>
+                <h2>📋 Order History</h2>
+                <div id="history-container" style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem;"></div>
+            </div>
+        </div>
+
+        <!-- ===================== RATING / FEEDBACK MODAL ===================== -->
+        <div id="feedback-modal" class="modal">
+            <div class="modal-content glass-panel" style="max-width: 480px; text-align: center;">
+                <span class="close-btn" onclick="hideFeedbackModal()">&times;</span>
+                <h2>⭐ Rate Your Order</h2>
+                <p style="margin-bottom: 1.5rem;">How was your experience with <strong id="feedback-order-id"></strong>?</p>
+                <div class="star-rating-large" id="star-rating-large">
+                    <span data-val="1" onclick="setRating(1)">★</span>
+                    <span data-val="2" onclick="setRating(2)">★</span>
+                    <span data-val="3" onclick="setRating(3)">★</span>
+                    <span data-val="4" onclick="setRating(4)">★</span>
+                    <span data-val="5" onclick="setRating(5)">★</span>
+                </div>
+                <p id="rating-label" style="margin: 0.5rem 0 1rem; font-weight: 600; color: var(--secondary);"></p>
+                <textarea id="modal-feedback-text" placeholder="Tell us about your experience..." style="width: 100%; padding: 0.75rem; border-radius: 10px; border: 1px solid var(--surface-border); background: var(--element-bg); color: var(--text-primary); resize: none; min-height: 80px;"></textarea>
+                <button class="primary-btn full-width" style="margin-top: 1rem;" onclick="submitModalFeedback()">Submit Review</button>
+            </div>
+        </div>
+
+        <!-- ===================== VENDOR SCREEN ===================== -->
+        <div id="vendor-screen" class="screen">
+            <div class="vendor-dashboard-layout">
+                <!-- 240px Fixed Desktop Sidebar -->
+                <aside class="vendor-sidebar">
+                    <div class="vendor-sidebar-header">
+                        <div style="width:36px;height:36px;border-radius:8px;background:var(--primary);display:flex;align-items:center;justify-content:center;color:white;">
+                            <i data-lucide="store" style="width:20px;height:20px;"></i>
+                        </div>
+                        <div>
+                            <h3 style="font-size:16px;margin:0;">SNACK TIME</h3>
+                            <span class="text-caption">Vendor Panel</span>
+                        </div>
+                    </div>
+                    <div class="vendor-nav-list">
+                        <div class="vendor-nav-item active" id="vendor-tab-orders" onclick="switchVendorTab('orders')">
+                            <i data-lucide="clipboard-list" style="width:18px;height:18px;"></i>
+                            <span>Dashboard</span>
+                            <span id="vendor-order-badge" class="status-badge status-pending" style="display:none;margin-left:auto;">0</span>
+                        </div>
+                        <div class="vendor-nav-item" id="vendor-tab-inventory" onclick="switchVendorTab('inventory')">
+                            <i data-lucide="package" style="width:18px;height:18px;"></i>
+                            <span>Inventory</span>
+                        </div>
+                        <div class="vendor-nav-item" id="vendor-tab-analytics" onclick="switchVendorTab('analytics')">
+                            <i data-lucide="bar-chart-2" style="width:18px;height:18px;"></i>
+                            <span>Analytics</span>
+                        </div>
+                        <div class="vendor-nav-item" id="vendor-tab-feedback" onclick="switchVendorTab('feedback')">
+                            <i data-lucide="message-square" style="width:18px;height:18px;"></i>
+                            <span>Feedback</span>
+                        </div>
+                        <div class="vendor-nav-item" id="vendor-tab-settings" onclick="switchVendorTab('settings')">
+                            <i data-lucide="settings" style="width:18px;height:18px;"></i>
+                            <span>Settings</span>
+                        </div>
+                    </div>
+                    <div style="border-top:1px solid var(--border);padding-top:16px;display:flex;flex-direction:column;gap:8px;">
+                        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:var(--bg-page);cursor:pointer;" onclick="showProfile()">
+                            <i data-lucide="user-circle" style="width:20px;height:20px;color:var(--primary);"></i>
+                            <span id="vendor-header-username" style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;">Vendor</span>
+                        </div>
+                        <button class="outline-btn full-width" style="font-size:13px;min-height:36px;border-color:var(--error);color:var(--error);" onclick="logout()">
+                            <i data-lucide="log-out" style="width:16px;height:16px;"></i> Logout
+                        </button>
+                    </div>
+                </aside>
+
+                <!-- Vendor Main Content Container -->
+                <main class="vendor-main-content">
+                    <!-- Mobile Vendor App Bar (<600px) -->
+                    <div class="vendor-mobile-appbar">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <button class="icon-btn" onclick="showProfile()" style="padding:0; width:40px; height:40px; justify-content:center; border:none; background:transparent;">
+                                <i data-lucide="menu" style="width:24px; height:24px;"></i>
+                            </button>
+                            <h2 style="font-size:18px; font-weight:700; margin:0;">Orders</h2>
+                        </div>
+                        <button class="outline-btn" onclick="filterOrders('all')" style="min-height:36px; padding:0 12px; font-size:13px; border-radius:var(--radius-pill);">
+                            <i data-lucide="sliders-horizontal" style="width:14px; height:14px; margin-right:4px;"></i> Filters
+                        </button>
+                    </div>
+
+                    <!-- Desktop Vendor Page Header -->
+                    <div class="vendor-desktop-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                        <div>
+                            <h2 style="font-size:18px; font-weight:700; margin:0; line-height:1.3;">Today's overview</h2>
+                            <span id="vendor-current-date" class="text-meta" style="font-size:12px; color:var(--text-secondary);">Wednesday, Aug 12</span>
+                        </div>
+                        <button class="outline-btn" style="min-height:36px; padding:0 14px; font-size:13px; border-radius:var(--radius-sm);" onclick="filterOrders('all')">
+                            <i data-lucide="sliders-horizontal" style="width:14px; height:14px; margin-right:4px;"></i> Filters
+                        </button>
+                    </div>
+
+                    <!-- Mobile Scrollable KPI Chips Row (<600px) -->
+                    <div class="kpi-chips-scroll">
+                        <div class="kpi-chip">
+                            <span class="chip-label">Today</span>
+                            <span class="chip-val" id="chip-today-orders">0</span>
+                        </div>
+                        <div class="kpi-chip">
+                            <span class="chip-label">Revenue</span>
+                            <span class="chip-val" id="chip-today-revenue">₹0</span>
+                        </div>
+                        <div class="kpi-chip">
+                            <span class="chip-label">Pending</span>
+                            <span class="chip-val" id="chip-pending-orders">0</span>
+                        </div>
+                        <div class="kpi-chip">
+                            <span class="chip-label">Avg Prep</span>
+                            <span class="chip-val" id="chip-avg-prep">8m</span>
+                        </div>
+                    </div>
+
+                    <!-- Top KPI Summary Cards Row (Desktop / Tablet) -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-icon-wrapper"><i data-lucide="shopping-bag" style="width:24px;height:24px;"></i></div>
+                            <div>
+                                <div class="kpi-val" id="kpi-today-orders">0</div>
+                                <div class="kpi-label">Today's Orders</div>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon-wrapper" style="background:var(--success-bg);color:var(--success);"><i data-lucide="indian-rupee" style="width:24px;height:24px;"></i></div>
+                            <div>
+                                <div class="kpi-val" id="kpi-today-revenue">₹0</div>
+                                <div class="kpi-label">Today's Revenue</div>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon-wrapper" style="background:var(--warning-bg);color:var(--warning);"><i data-lucide="clock" style="width:24px;height:24px;"></i></div>
+                            <div>
+                                <div class="kpi-val" id="kpi-pending-orders">0</div>
+                                <div class="kpi-label">Pending Orders</div>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon-wrapper" style="background:var(--info-bg);color:var(--info);"><i data-lucide="timer" style="width:24px;height:24px;"></i></div>
+                            <div>
+                                <div class="kpi-val" id="kpi-avg-prep">8 min</div>
+                                <div class="kpi-label">Avg Prep Time</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ---- ORDERS VIEW ---- -->
+                    <div id="vendor-orders-view" class="vendor-view active">
+                        <div class="table-filter-bar">
+                            <h3 class="text-section-heading">📋 <span data-i18n="vendor_incoming_orders">Incoming Orders</span></h3>
+                            <div style="display:flex; gap: 8px; flex-wrap:wrap; align-items:center;">
+                                <input type="text" id="vendor-order-search" placeholder="Search orders..." oninput="renderVendorOrders()" style="width:180px;">
+                                <span class="status-badge status-pending" style="cursor:pointer;" onclick="filterOrders('pending')" data-i18n="vendor_filter_pending">Pending</span>
+                                <span class="status-badge status-preparing" style="cursor:pointer;" onclick="filterOrders('preparing')" data-i18n="vendor_filter_preparing">Preparing</span>
+                                <span class="status-badge" style="background: var(--primary-tint); color: var(--primary); cursor:pointer;" onclick="filterOrders('all')" data-i18n="vendor_filter_all">All</span>
+                            </div>
+                        </div>
+                        <div id="live-orders-container" class="grid-container"></div>
+                    </div>
+
+                    <!-- ---- INVENTORY VIEW ---- -->
+                    <div id="vendor-inventory-view" class="vendor-view">
+                        <div class="table-filter-bar">
+                            <h3 class="text-section-heading">📦 <span data-i18n="vendor_inventory_title">Inventory & Menu</span></h3>
+                            <button class="primary-btn" onclick="showAddItemModal()"><span data-i18n="btn_add_item">+ Add Item</span></button>
+                        </div>
+                        <div class="table-container">
+                            <table id="inventory-table">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="vendor_col_item">Item</th>
+                                        <th data-i18n="vendor_col_price">Price (₹)</th>
+                                        <th data-i18n="vendor_col_stock">Stock</th>
+                                        <th data-i18n="vendor_col_sold">Sold</th>
+                                        <th data-i18n="vendor_col_rating">Avg Rating</th>
+                                        <th>🔥 Daily Offer</th>
+                                        <th data-i18n="vendor_col_action">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inventory-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- ---- SETTINGS VIEW ---- -->
+                    <div id="vendor-settings-view" class="vendor-view">
+                        <!-- Populated by app.js renderVendorSettings() -->
+                    </div>
+
+                    <!-- ---- ANALYTICS VIEW ---- -->
+                    <div id="vendor-analytics-view" class="vendor-view">
+                        <h3 class="text-section-heading">📊 <span data-i18n="vendor_analytics_title">Sales Analytics</span></h3>
+                        <div class="chart-container glass-panel" style="padding: 24px; margin-top: 16px;">
+                            <canvas id="salesChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- ---- FEEDBACK / REVIEWS VIEW ---- -->
+                    <div id="vendor-feedback-view" class="vendor-view">
+                        <h3 class="text-section-heading">⭐ <span data-i18n="vendor_feedback_title">Customer Reviews</span></h3>
+                        <div id="vendor-reviews-container" style="margin-top: 16px; display: flex; flex-direction: column; gap: 16px;"></div>
+                    </div>
+                </main>
+            </div>
+        </div>
+
+                <!-- ---- ABOUT VIEW (Vendor) ---- -->
+                <div id="vendor-about-view" class="vendor-view">
+                    <div class="about-hero">
+                        <div class="about-logo-ring">
+                            <i data-lucide="store" style="width:40px; height:40px; color:white;"></i>
+                        </div>
+                        <h2 class="about-title">SNACK TIME</h2>
+                        <p class="about-subtitle">Sri Eshwar College of Engineering &bull; Campus Canteen Pre-Order System</p>
+                        <p class="about-description">A smart pre-order platform giving vendors full control — live inventory, instant order alerts, analytics and break-time management.</p>
+                    </div>
+
+                    <h3 class="about-section-heading"><i data-lucide="users" style="vertical-align:middle; margin-right:8px; width:20px; height:20px;"></i> Meet the Team</h3>
+
+                    <div class="founders-grid">
+                        <div class="founder-card founder-primary">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #FF6B35, #FF8C69);">
+                                <span>MH</span>
+                            </div>
+                            <div class="founder-badge">Founder</div>
+                            <h4 class="founder-name">Mohamed Harriz</h4>
+                            <p class="founder-handle">@harriz07</p>
+                            <p class="founder-desc">Visionary behind SNACK TIME. Designed the full-stack architecture, UI/UX, real-time order system, and led the project from idea to deployment.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">Full-Stack</span>
+                                <span class="founder-tag">UI/UX</span>
+                                <span class="founder-tag">Architecture</span>
+                            </div>
+                        </div>
+                        <div class="founder-card">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #6366F1, #8B5CF6);">
+                                <span>MM</span>
+                            </div>
+                            <div class="founder-badge founder-badge-co">Co-Founder</div>
+                            <h4 class="founder-name">Mohamed Mubashir</h4>
+                            <p class="founder-handle">@mubashir</p>
+                            <p class="founder-desc">Core contributor to system design, testing, and operations. Helped shape the vendor workflow and order management experience.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">System Design</span>
+                                <span class="founder-tag">Operations</span>
+                                <span class="founder-tag">Testing</span>
+                            </div>
+                        </div>
+                        <div class="founder-card">
+                            <div class="founder-avatar" style="background: linear-gradient(135deg, #10B981, #059669);">
+                                <span>SG</span>
+                            </div>
+                            <div class="founder-badge founder-badge-co">Co-Founder</div>
+                            <h4 class="founder-name">Shriram G</h4>
+                            <p class="founder-handle">@shriram</p>
+                            <p class="founder-desc">Key contributor to product strategy, user research, and campus outreach. Bridges the gap between student needs and technical implementation.</p>
+                            <div class="founder-tags">
+                                <span class="founder-tag">Strategy</span>
+                                <span class="founder-tag">Research</span>
+                                <span class="founder-tag">Outreach</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="about-footer-card">
+                        <p><i data-lucide="heart" style="width:14px; height:14px; vertical-align:middle; color:var(--danger);"></i> Built with passion at <strong>Sri Eshwar College of Engineering, Coimbatore</strong></p>
+                        <p style="margin-top:0.5rem; font-size:0.9rem; font-weight:600; color:var(--primary);">App developed by Department of Electronics and Communication Engineering</p>
+                        <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-secondary);">SNACK TIME <span id="app-version-vendor">v1.0.3</span> &bull; 2026 &bull; All rights reserved</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+        
+        <!-- ===================== ADD ITEM MODAL ===================== -->
+        <div id="add-item-modal" class="modal">
+             <div class="modal-content glass-panel" style="max-width: 440px;">
+                <span class="close-btn" onclick="hideAddItemModal()">&times;</span>
+                <h2 data-i18n="add_item_title">Add New Snack</h2>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+                    <input type="text" id="new-item-name" data-i18n-placeholder="add_item_name" placeholder="Item Name (e.g. Cold Coffee)" />
+                    <input type="number" id="new-item-price" data-i18n-placeholder="add_item_price" placeholder="Original Price (₹)" oninput="calculateOfferPrice()" />
+                    <input type="number" id="new-item-stock" data-i18n-placeholder="add_item_stock" placeholder="Initial Stock" />
+                    
+                    <!-- Daily Offer / Today's Special Toggle & Fields -->
+                    <div style="background:var(--element-bg); padding:1rem; border-radius:12px; border:1px solid var(--surface-border); text-align:left;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; font-size:0.9rem; color:var(--text-primary);">
+                            <input type="checkbox" id="new-item-is-offer" onchange="toggleOfferFields()" style="width:18px; height:18px; accent-color:var(--primary); cursor:pointer;">
+                            🔥 Set as Daily Offer / Today's Special
+                        </label>
+
+                        <div id="offer-discount-fields" style="display:none; flex-direction:column; gap:0.75rem; margin-top:0.75rem; padding-top:0.75rem; border-top:1px dashed var(--surface-border);">
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                <select id="offer-discount-type" onchange="calculateOfferPrice()" style="padding:0.5rem; border-radius:8px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary); font-family:inherit; flex:1; min-width:140px;">
+                                    <option value="percent">Discount Percentage (%)</option>
+                                    <option value="amount">Discount Amount (₹)</option>
+                                </select>
+                                <input type="number" id="offer-discount-value" placeholder="Discount (e.g. 20)" oninput="calculateOfferPrice()" style="width:130px; padding:0.5rem; border-radius:8px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary);" />
+                            </div>
+                            <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(16,185,129,0.1); padding:0.5rem 0.75rem; border-radius:8px; border:1px solid var(--success);">
+                                <span style="font-size:0.85rem; color:var(--text-secondary);">Calculated Offer Price:</span>
+                                <strong id="offer-calculated-preview" style="font-size:1rem; color:var(--success);">₹0</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="primary-btn full-width" onclick="addNewItem()" data-i18n="add_item_btn">Add Item</button>
+                </div>
+             </div>
+        </div>
+
+        <!-- ===================== SET / EDIT OFFER MODAL ===================== -->
+        <div id="set-offer-modal" class="modal">
+            <div class="modal-content glass-panel" style="max-width: 420px;">
+                <span class="close-btn" onclick="hideSetOfferModal()">&times;</span>
+                <h3>🔥 Set Daily Offer / Today's Special</h3>
+                <p id="offer-modal-item-name" style="font-weight:600; color:var(--primary); margin:0.5rem 0 1rem; font-size:1.1rem;"></p>
+                <input type="hidden" id="offer-modal-item-id">
+                <div style="display:flex; flex-direction:column; gap:0.85rem; text-align:left;">
+                    <div>
+                        <label style="font-size:0.85rem; color:var(--text-secondary); font-weight:600;">Original Price (₹)</label>
+                        <input type="number" id="offer-modal-original-price" oninput="calculateModalOfferPrice()" style="width:100%; padding:0.6rem; border-radius:8px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; margin-top:0.25rem;">
+                    </div>
+                    <div style="display:flex; gap:0.5rem;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.85rem; color:var(--text-secondary); font-weight:600;">Discount Type</label>
+                            <select id="offer-modal-discount-type" onchange="calculateModalOfferPrice()" style="width:100%; padding:0.6rem; border-radius:8px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary); font-family:inherit; margin-top:0.25rem;">
+                                <option value="percent">Percentage (%)</option>
+                                <option value="amount">Amount (₹)</option>
+                            </select>
+                        </div>
+                        <div style="width:140px;">
+                            <label style="font-size:0.85rem; color:var(--text-secondary); font-weight:600;">Discount Value</label>
+                            <input type="number" id="offer-modal-discount-value" placeholder="e.g. 15" oninput="calculateModalOfferPrice()" style="width:100%; padding:0.6rem; border-radius:8px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; margin-top:0.25rem;">
+                        </div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(16,185,129,0.1); padding:0.6rem 0.85rem; border-radius:8px; border:1px solid var(--success); margin-top:0.25rem;">
+                        <span style="font-size:0.85rem; color:var(--text-secondary);">Calculated Offer Price:</span>
+                        <strong id="offer-modal-calculated-preview" style="font-size:1.1rem; color:var(--success);">₹0</strong>
+                    </div>
+                    <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                        <button class="outline-btn" style="border-color:var(--danger); color:var(--danger);" onclick="removeOfferFromItem()">Remove Offer</button>
+                        <button class="primary-btn" style="flex:1;" onclick="saveItemOffer()">Save Offer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ===================== FORGOT PASSWORD MODAL ===================== -->
+    <div id="forgot-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 420px;">
+            <span class="close-btn" onclick="closeForgotPassword()">&times;</span>
+            <div id="forgot-step-1">
+                <h2 style="margin-bottom:0.5rem;"><i data-lucide="mail" style="vertical-align:middle; margin-right:8px; color:var(--primary);"></i>Reset Password</h2>
+                <p style="margin-bottom:1.5rem; font-size:0.9rem;">Enter your registered email address. We will send you a real recovery link to reset your password.</p>
+                <div class="auth-form">
+                    <input type="email" id="forgot-email" placeholder="Your registered email (@sece.ac.in)" />
+                    <p id="forgot-error" style="color:var(--danger); font-size:0.85rem; display:none; margin:0;"></p>
+                    <button id="forgot-submit-btn" class="primary-btn" onclick="sendPasswordResetEmail()">Send Reset Link</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== PROFILE MODAL ===================== -->
+    <div id="profile-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 420px; text-align: center;">
+            <span class="close-btn" onclick="hideProfile()">&times;</span>
+            <div style="margin-bottom: 1.5rem;">
+                <div style="width: 80px; height: 80px; border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--secondary)); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; box-shadow: 0 8px 25px rgba(255,107,53,0.3);">
+                    <i data-lucide="user" style="width: 40px; height: 40px; color: white;"></i>
+                </div>
+                <h2 id="profile-username" style="margin: 0; font-size: 1.5rem;"></h2>
+                <p id="profile-role-badge" style="display:inline-block; background: var(--primary); color: white; padding: 2px 12px; border-radius: 20px; font-size: 0.8rem; margin-top: 0.5rem; font-weight: 600;"></p>
+            </div>
+            <div class="glass-panel" style="padding: 1.25rem; text-align: left; display: flex; flex-direction: column; gap: 0.75rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.75rem;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;"><i data-lucide="user" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Username</span>
+                    <strong id="profile-username-val"></strong>
+                </div>
+                <div id="profile-email-row" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.75rem;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;"><i data-lucide="mail" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> College Email</span>
+                    <strong id="profile-email-val" style="font-size:0.85rem;"></strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.75rem;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;"><i data-lucide="shield" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Role</span>
+                    <strong id="profile-role-val"></strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.75rem;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;"><i data-lucide="calendar" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Member Since</span>
+                    <strong id="profile-since-val" style="font-size:0.85rem;"></strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;" data-i18n="profile_language"><i data-lucide="globe" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Language</span>
+                    <select id="profile-language-selector" onchange="setLanguage(this.value)" style="padding: 4px 8px; border-radius: 4px; border: 1px solid var(--surface-border); background: var(--bg-primary); font-family: inherit;">
+                        <option value="en">English</option>
+                        <option value="ta">தமிழ் (Tamil)</option>
+                        <option value="kn">ಕನ್ನಡ (Kannada)</option>
+                        <option value="hi">हिंदी (Hindi)</option>
+                        <option value="ml">മലയാളം (Malayalam)</option>
+                    </select>
+                </div>
+            </div>
+            <button class="outline-btn" style="margin-top:1.25rem; width:100%; border-color:var(--danger); color:var(--danger);" onclick="hideProfile(); logout();"><i data-lucide="log-out" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> <span data-i18n="nav_logout">Logout</span></button>
+        </div>
+    </div>
+
+    <!-- ===================== SUPPORT TICKET MODAL ===================== -->
+    <div id="support-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 450px;">
+            <span class="close-btn" onclick="hideSupportModal()">&times;</span>
+            <h3 style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem;">💬 Report an Issue</h3>
+            <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:1rem;">Having trouble with an order or payment? Let our team know!</p>
+            <input type="text" id="support-order-id" placeholder="Order ID (optional)" style="width:100%;margin-bottom:0.75rem;padding:0.6rem;border-radius:8px;border:1px solid var(--surface-border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+            <textarea id="support-message" placeholder="Describe your issue in detail..." rows="4" style="width:100%;margin-bottom:1rem;padding:0.6rem;border-radius:8px;border:1px solid var(--surface-border);background:var(--bg-primary);color:var(--text-primary);font-family:inherit;box-sizing:border-box;"></textarea>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                <button class="outline-btn" onclick="hideSupportModal()">Cancel</button>
+                <button class="primary-btn" onclick="submitSupportTicket()">Submit Ticket</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== FLOATING STICKY CART BAR (Student Mobile) ===================== -->
+    <div id="sticky-cart-bar" class="sticky-cart-bar" style="display:none;" onclick="showCartModal()">
+        <div class="cart-summary-left" style="display:flex; align-items:center; gap:10px;">
+            <span id="sticky-cart-count-badge" class="status-badge" style="background:var(--primary); color:white; font-size:11px; font-weight:700;">0 items</span>
+            <span id="sticky-cart-total-price" style="font-weight:700; font-size:15px; color:var(--text-primary);">₹0</span>
+        </div>
+        <button class="primary-btn" style="min-height:36px; padding:0 14px; font-size:13px; border-radius:var(--radius-pill); border:none; display:flex; align-items:center; gap:6px;">
+            View cart <i data-lucide="arrow-right" style="width:16px; height:16px;"></i>
+        </button>
+    </div>
+
+    <!-- ===================== STUDENT MOBILE BOTTOM NAVIGATION BAR (<600px) ===================== -->
+    <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
+        <div class="mobile-bottom-nav-items">
+            <button class="mobile-nav-item active" id="mob-nav-home" onclick="switchCustomerTab('menu')">
+                <i data-lucide="home" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Home</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-nav-offers" onclick="switchCustomerTab('menu'); const el = document.getElementById('specials-section'); if(el) el.scrollIntoView({behavior:'smooth'});">
+                <i data-lucide="flame" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Offers</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-nav-cart" onclick="showCartModal()">
+                <i data-lucide="shopping-cart" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Cart</span>
+                <span id="cart-badge-mobile" class="mobile-badge" style="display:none;">0</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-nav-orders" onclick="switchCustomerTab('history')">
+                <i data-lucide="receipt" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Orders</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-nav-profile" onclick="showProfile()">
+                <i data-lucide="user" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Profile</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- ===================== VENDOR MOBILE BOTTOM NAVIGATION BAR (<600px) ===================== -->
+    <nav id="vendor-mobile-bottom-nav" class="mobile-bottom-nav vendor-bottom-nav" style="display:none;">
+        <div class="mobile-bottom-nav-items">
+            <button class="mobile-nav-item active" id="mob-vnav-orders" onclick="switchVendorTab('orders')">
+                <i data-lucide="clipboard-list" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Orders</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-vnav-inventory" onclick="switchVendorTab('inventory')">
+                <i data-lucide="package" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Inventory</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-vnav-analytics" onclick="switchVendorTab('analytics')">
+                <i data-lucide="bar-chart-2" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Analytics</span>
+            </button>
+            <button class="mobile-nav-item" id="mob-vnav-settings" onclick="switchVendorTab('settings')">
+                <i data-lucide="settings" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">Settings</span>
+            </button>
+        </div>
+    </nav>
+
+    <script src="app.js?v=1787935959487"></script>
+</body>
+</html>

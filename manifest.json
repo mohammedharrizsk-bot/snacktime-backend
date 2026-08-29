@@ -1,0 +1,25 @@
+{
+  "short_name": "SNACK TIME",
+  "name": "SNACK TIME - Campus Canteen",
+  "description": "Pre-order your favourite campus snacks at Sri Eshwar College of Engineering. Skip the queue!",
+  "icons": [
+    {
+      "src": "snacktime-logo.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "snacktime-logo.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F8FAFC",
+  "theme_color": "#166534",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/"
+}

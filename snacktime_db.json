@@ -1,0 +1,176 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "teststudent",
+      "email": "teststudent@sece.ac.in",
+      "password_hash": "$2a$10$qhcfMIer2C5DkrzMghmWzuCr3t2GaPwudlDkyxvVatd9mG50aqFBy",
+      "role": "student",
+      "created_at": "2026-08-03T08:29:54.804Z"
+    },
+    {
+      "id": 2,
+      "username": "harriz_student",
+      "email": "mohamedharriz.b2025ece@sece.ac.in",
+      "password_hash": "$2a$10$VGOAIFwqc098OrDVDbuc/.4MSHlLnMypbToFsTqtd6/55VoDiHQG6",
+      "role": "student",
+      "created_at": "2026-08-03T08:37:46.666Z"
+    }
+  ],
+  "inventory": [
+    {
+      "id": 1,
+      "name": "Samosa",
+      "price": 15,
+      "stock": 48,
+      "sold": 14,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 2,
+      "name": "Cold Coffee",
+      "price": 40,
+      "stock": 30,
+      "sold": 5,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 3,
+      "name": "Masala Dosa",
+      "price": 60,
+      "stock": 20,
+      "sold": 8,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 4,
+      "name": "Veg Sandwich",
+      "price": 35,
+      "stock": 40,
+      "sold": 15,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 5,
+      "name": "Tea",
+      "price": 10,
+      "stock": 80,
+      "sold": 30,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 6,
+      "name": "Coffee",
+      "price": 15,
+      "stock": 60,
+      "sold": 22,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 7,
+      "name": "Biscuits",
+      "price": 10,
+      "stock": 100,
+      "sold": 45,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 8,
+      "name": "Bonda",
+      "price": 20,
+      "stock": 40,
+      "sold": 18,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 9,
+      "name": "Sugarcane Juice",
+      "price": 30,
+      "stock": 25,
+      "sold": 10,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 10,
+      "name": "Sweet Corn",
+      "price": 25,
+      "stock": 35,
+      "sold": 14,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 11,
+      "name": "French Fries",
+      "price": 50,
+      "stock": 30,
+      "sold": 9,
+      "is_special": false,
+      "original_price": null
+    },
+    {
+      "id": 12,
+      "name": "Horlicks",
+      "price": 20,
+      "stock": 50,
+      "sold": 0,
+      "is_special": false,
+      "original_price": null
+    }
+  ],
+  "orders": [
+    {
+      "id": "ORD-TEST-001",
+      "customer": "teststudent",
+      "total": 30,
+      "status": "ready",
+      "time": "12:00:00 PM",
+      "placed_at": 1785745794865,
+      "method": "Counter",
+      "token": 101,
+      "payment_id": null,
+      "rating": 5,
+      "feedback": "Delicious Samosa!",
+      "cancel_reason": null
+    }
+  ],
+  "order_items": [
+    {
+      "order_id": "ORD-TEST-001",
+      "item_id": 1,
+      "name": "Samosa",
+      "qty": 2,
+      "price": 15
+    }
+  ],
+  "settings": [
+    {
+      "setting_key": "shop_status",
+      "setting_value": "open"
+    },
+    {
+      "setting_key": "break_end_time",
+      "setting_value": "null"
+    }
+  ],
+  "reviews": [
+    {
+      "id": 1,
+      "order_id": "ORD-TEST-001",
+      "customer": "teststudent",
+      "items": "Samosa x 2",
+      "rating": 5,
+      "feedback": "Delicious Samosa!",
+      "time": "3/8/2026, 1:59:54 pm"
+    }
+  ]
+}

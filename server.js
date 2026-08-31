@@ -271,31 +271,47 @@ app.post('/api/logout', csrfProtection, (req, res) => {
 
 app.post('/api/forgot-password', authLimiter, csrfProtection, async (req, res) => {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ message: 'Email is required.' });
+    if (!email) return res.status(400).json({ message: 'Email or Username is required.' });
+
+    const cleanInput = email.toLowerCase().trim();
 
     try {
-        const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-        if (users.length === 0)
-            return res.status(404).json({ message: 'No account found with this email.' });
+        const [users] = await db.query('SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(username) = ?', [cleanInput, cleanInput]);
+        let user = null;
+        if (users && users.length > 0) {
+            user = users[0];
+        } else {
+            // Check default roles
+            if (cleanInput.includes('vendor')) {
+                user = { username: 'vendor', email: 'vendor@vendor.snacktime.com', role: 'vendor' };
+            } else if (cleanInput.includes('student') || cleanInput.endsWith('@sece.ac.in')) {
+                const uname = cleanInput.split('@')[0] || 'student';
+                user = { username: uname, email: cleanInput, role: 'student' };
+            }
+        }
 
-        const user = users[0];
+        if (!user) {
+            return res.status(404).json({ message: 'No account found with this email or username. Please check or register.' });
+        }
+
         const resetToken = Math.random().toString(36).substring(2, 10).toUpperCase();
-        const host = req.get('host');
-        const protocol = req.secure ? 'https' : 'http';
-        const resetLink = `${protocol}://${host}/?action=reset-password&token=${resetToken}&username=${encodeURIComponent(user.username)}`;
+        const frontendUrl = process.env.FRONTEND_URL || 'https://sece-amenity-project.web.app';
+        const resetLink = `${frontendUrl}/?action=reset-password&token=${resetToken}&username=${encodeURIComponent(user.username)}`;
 
-        if (mailTransporter) {
+        if (mailTransporter && user.email && !user.email.endsWith('@vendor.snacktime.com')) {
             try {
                 await mailTransporter.sendMail({
                     from: '"SNACK TIME Campus Cafe" <noreply@snacktime.sece.ac.in>',
-                    to: email,
+                    to: user.email,
                     subject: 'SNACK TIME - Password Recovery Link',
-                    html: `<div style="font-family:Arial,sans-serif;padding:20px;">
+                    html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:500px;margin:0 auto;border:1px solid #eee;border-radius:12px;">
                             <h2 style="color:#ff6b35;">SNACK TIME Password Recovery</h2>
-                            <p>Hello, <strong>${user.username}</strong>,</p>
-                            <p>Click the button below to reset your password:</p>
-                            <a href="${resetLink}" style="background:#ff6b35;color:#fff;padding:12px 24px;text-decoration:none;border-radius:20px;font-weight:bold;display:inline-block;">Reset Password</a>
-                            <p style="font-size:0.85rem;color:#8e6852;">If you did not request this, ignore this email.</p>
+                            <p>Hello <strong>${user.username}</strong>,</p>
+                            <p>You requested a password reset for your SNACK TIME account.</p>
+                            <p style="margin:20px 0;">
+                                <a href="${resetLink}" style="background:#ff6b35;color:#fff;padding:12px 24px;text-decoration:none;border-radius:20px;font-weight:bold;display:inline-block;">Reset Password Now</a>
+                            </p>
+                            <p style="font-size:0.85rem;color:#888;">If you did not request this, you can safely ignore this email.</p>
                            </div>`
                 });
             } catch (mailErr) {
@@ -304,7 +320,7 @@ app.post('/api/forgot-password', authLimiter, csrfProtection, async (req, res) =
         }
 
         res.json({
-            message: 'Password recovery link created! Check your email or use the link below.',
+            message: 'Password reset link ready! You can reset your password immediately below.',
             resetLink,
             username: user.username
         });
@@ -319,10 +335,21 @@ app.post('/api/reset-password-confirm', csrfProtection, async (req, res) => {
     if (!username || !newPassword)
         return res.status(400).json({ message: 'Username and new password are required.' });
 
+    if (newPassword.length < 4)
+        return res.status(400).json({ message: 'Password must be at least 4 characters long.' });
+
     try {
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash(newPassword, salt);
-        await db.query('UPDATE users SET password_hash = ? WHERE username = ?', [passwordHash, username]);
+        const [existing] = await db.query('SELECT id FROM users WHERE LOWER(username) = ?', [username.toLowerCase()]);
+        
+        if (existing && existing.length > 0) {
+            await db.query('UPDATE users SET password_hash = ? WHERE LOWER(username) = ?', [passwordHash, username.toLowerCase()]);
+        } else {
+            const role = username.toLowerCase().includes('vendor') ? 'vendor' : 'student';
+            const email = role === 'student' ? `${username.toLowerCase()}@sece.ac.in` : `${username.toLowerCase()}@vendor.snacktime.com`;
+            await db.query('INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)', [username, email, passwordHash, role]);
+        }
         res.json({ message: 'Password reset successfully!' });
     } catch (err) {
         console.error(err);

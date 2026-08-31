@@ -15,7 +15,7 @@
     <meta name="apple-mobile-web-app-title" content="SNACK TIME">
     <link rel="apple-touch-icon" href="snacktime-logo.png">
 
-    <link rel="stylesheet" href="styles.css?v=1788190628994">
+    <link rel="stylesheet" href="styles.css?v=1788191450661">
     <!-- Design System Fonts: Inter (body) + Poppins (headings) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     
@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Translations -->
-    <script src="translations.js?v=1788190628994"></script>
+    <script src="translations.js?v=1788191450661"></script>
 
     <!-- Real-Time Socket.io Engine -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -39,7 +39,7 @@
 
     <!-- PWA Service Worker Registration & Instant Auto-Update -->
     <script>
-    window.SNACKTIME_VERSION = '1.0.8.1788190628994';
+    window.SNACKTIME_VERSION = '1.0.8.1788191450661';
 
     (function () {
       if (!('serviceWorker' in navigator)) return;
@@ -848,12 +848,22 @@
         <div class="modal-content glass-panel" style="max-width: 420px;">
             <span class="close-btn" onclick="closeForgotPassword()">&times;</span>
             <div id="forgot-step-1">
-                <h2 style="margin-bottom:0.5rem;"><i data-lucide="mail" style="vertical-align:middle; margin-right:8px; color:var(--primary);"></i>Reset Password</h2>
-                <p style="margin-bottom:1.5rem; font-size:0.9rem;">Enter your registered email address. We will send you a real recovery link to reset your password.</p>
+                <h2 style="margin-bottom:0.5rem;"><i data-lucide="key" style="vertical-align:middle; margin-right:8px; color:var(--primary);"></i>Reset Password</h2>
+                <p style="margin-bottom:1.5rem; font-size:0.9rem;">Enter your registered email or username to reset your password.</p>
                 <div class="auth-form">
-                    <input type="email" id="forgot-email" placeholder="Your registered email (@sece.ac.in)" />
+                    <input type="text" id="forgot-email" placeholder="Your registered email or username" />
                     <p id="forgot-error" style="color:var(--danger); font-size:0.85rem; display:none; margin:0;"></p>
-                    <button id="forgot-submit-btn" class="primary-btn" onclick="sendPasswordResetEmail()">Send Reset Link</button>
+                    <button id="forgot-submit-btn" class="primary-btn" onclick="sendPasswordResetEmail()">Continue</button>
+                </div>
+            </div>
+            <div id="forgot-step-2" style="display:none;">
+                <h2 style="margin-bottom:0.5rem;"><i data-lucide="shield-check" style="vertical-align:middle; margin-right:8px; color:var(--success);"></i>New Password</h2>
+                <p style="margin-bottom:1rem; font-size:0.9rem;">Setting new password for <strong id="forgot-target-username"></strong>:</p>
+                <div class="auth-form">
+                    <input type="password" id="forgot-new-password" placeholder="New Password (min 4 chars)" />
+                    <input type="password" id="forgot-confirm-password" placeholder="Confirm New Password" />
+                    <p id="forgot-step-2-error" style="color:var(--danger); font-size:0.85rem; display:none; margin:0;"></p>
+                    <button id="forgot-confirm-btn" class="primary-btn" onclick="confirmPasswordResetDirect()">Set New Password</button>
                 </div>
             </div>
         </div>
@@ -981,6 +991,6 @@
         </div>
     </nav>
 
-    <script src="app.js?v=1788190628994"></script>
+    <script src="app.js?v=1788191450661"></script>
 </body>
 </html>

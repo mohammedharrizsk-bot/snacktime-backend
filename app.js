@@ -413,7 +413,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1788190628994';
+const APP_VERSION = '1.0.8.1788191450661';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -1469,9 +1469,26 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
+                    if (errData.message === 'Username not found.') {
+                        const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
+                        const localFound = localUsers.find(u => u.username.toLowerCase() === lowerUser);
+                        if (localFound && localFound.password === passwordInput) {
+                            apiFetch('/api/register', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ username: localFound.username, email: localFound.email, password: passwordInput, role: localFound.role })
+                            }).finally(() => {
+                                if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+                                executeLogin(localFound.username, localFound.role, localFound.email);
+                            });
+                            return;
+                        }
+                    }
                     if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                     if (errorMsg) {
-                        errorMsg.innerText = errData.message;
+                        errorMsg.innerText = errData.message === 'Username not found.'
+                            ? "Username not found. Please click 'Register' above to create your account."
+                            : errData.message;
                         errorMsg.style.display = 'block';
                     }
                     return;
@@ -3550,11 +3567,17 @@ function loadOrderHistory() { /* handled by Socket.io real-time listener */ }
 function showCartModal() { showCart(); }
 
 // ========================= FORGOT PASSWORD =========================
-function openForgotPassword() {
+let pendingResetUsername = '';
+
+function openForgotPassword(defaultUser = '') {
     const emailEl = $('forgot-email');
-    if (emailEl) emailEl.value = '';
+    if (emailEl) emailEl.value = defaultUser || '';
     const errEl = $('forgot-error');
     if (errEl) { errEl.style.display = 'none'; errEl.innerText = ''; }
+    const step1 = $('forgot-step-1');
+    const step2 = $('forgot-step-2');
+    if (step1) step1.style.display = 'block';
+    if (step2) step2.style.display = 'none';
     const modal = $('forgot-modal');
     if (modal) modal.classList.add('active');
     if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
@@ -3563,18 +3586,21 @@ function openForgotPassword() {
 function closeForgotPassword() {
     const modal = $('forgot-modal');
     if (modal) modal.classList.remove('active');
+    pendingResetUsername = '';
 }
 
 function sendPasswordResetEmail() {
-    const emailInput = $('forgot-email') ? $('forgot-email').value.trim().toLowerCase() : '';
+    const emailInput = $('forgot-email') ? $('forgot-email').value.trim() : '';
     const errEl = $('forgot-error');
     const submitBtn = $('forgot-submit-btn');
     if (errEl) errEl.style.display = 'none';
 
     if (!emailInput) {
-        if (errEl) { errEl.innerText = 'Please enter your registered email.'; errEl.style.display = 'block'; }
+        if (errEl) { errEl.innerText = 'Please enter your registered email or username.'; errEl.style.display = 'block'; }
         return;
     }
+
+    if (submitBtn) { submitBtn.innerText = 'Checking...'; submitBtn.disabled = true; }
 
     apiFetch('/api/forgot-password', {
         method: 'POST',
@@ -3582,23 +3608,111 @@ function sendPasswordResetEmail() {
         body: JSON.stringify({ email: emailInput })
     })
     .then(async res => {
-        const data = await safeParseJson(res);
-        if (submitBtn) { submitBtn.innerText = 'Send Reset Link'; submitBtn.disabled = false; }
-        showNotification(data.message || 'Password reset link sent! Check your email.', 'success');
-        closeForgotPassword();
-        if (data.resetLink) {
-            console.log('Password Recovery Link:', data.resetLink);
-        }
+        let data = {};
+        try { data = await res.json(); } catch(e) {}
+        if (submitBtn) { submitBtn.innerText = 'Continue'; submitBtn.disabled = false; }
+        
+        pendingResetUsername = data.username || emailInput.split('@')[0] || emailInput;
+        
+        // Advance to Step 2 to enter new password directly!
+        const step1 = $('forgot-step-1');
+        const step2 = $('forgot-step-2');
+        const targetUname = $('forgot-target-username');
+        if (targetUname) targetUname.innerText = pendingResetUsername;
+        if (step1) step1.style.display = 'none';
+        if (step2) step2.style.display = 'block';
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
     })
     .catch(err => {
-        if (submitBtn) { submitBtn.innerText = 'Send Reset Link'; submitBtn.disabled = false; }
-        // Fallback for static deployment / offline mode
-        const host = window.location.host;
-        const resetToken = Math.random().toString(36).substring(2, 10).toUpperCase();
-        const resetLink = `${window.location.protocol}//${host}/?action=reset-password&token=${resetToken}&username=${encodeURIComponent(emailInput.split('@')[0])}`;
-        showNotification('Password reset link generated! Check console or click link to reset.', 'success');
-        console.log('Password Reset Link (Local Fallback):', resetLink);
+        if (submitBtn) { submitBtn.innerText = 'Continue'; submitBtn.disabled = false; }
+        pendingResetUsername = emailInput.split('@')[0] || emailInput;
+        const step1 = $('forgot-step-1');
+        const step2 = $('forgot-step-2');
+        const targetUname = $('forgot-target-username');
+        if (targetUname) targetUname.innerText = pendingResetUsername;
+        if (step1) step1.style.display = 'none';
+        if (step2) step2.style.display = 'block';
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+    });
+}
+
+function confirmPasswordResetDirect() {
+    const newPwd = $('forgot-new-password') ? $('forgot-new-password').value : '';
+    const confirmPwd = $('forgot-confirm-password') ? $('forgot-confirm-password').value : '';
+    const errEl = $('forgot-step-2-error');
+    const confirmBtn = $('forgot-confirm-btn');
+    if (errEl) { errEl.style.display = 'none'; errEl.innerText = ''; }
+
+    if (!newPwd || !confirmPwd) {
+        if (errEl) { errEl.innerText = 'Please fill in both password fields.'; errEl.style.display = 'block'; }
+        return;
+    }
+
+    if (newPwd.length < 4) {
+        if (errEl) { errEl.innerText = 'Password must be at least 4 characters long.'; errEl.style.display = 'block'; }
+        return;
+    }
+
+    if (newPwd !== confirmPwd) {
+        if (errEl) { errEl.innerText = 'Passwords do not match.'; errEl.style.display = 'block'; }
+        return;
+    }
+
+    if (confirmBtn) { confirmBtn.innerText = 'Updating...'; confirmBtn.disabled = true; }
+
+    const targetUser = pendingResetUsername || 'student';
+
+    apiFetch('/api/reset-password-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: targetUser, newPassword: newPwd })
+    })
+    .then(async res => {
+        if (confirmBtn) { confirmBtn.innerText = 'Set New Password'; confirmBtn.disabled = false; }
+        
+        // Also update local storage
+        let localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
+        const idx = localUsers.findIndex(u => u.username.toLowerCase() === targetUser.toLowerCase());
+        if (idx >= 0) {
+            localUsers[idx].password = newPwd;
+        } else {
+            const role = targetUser.toLowerCase().includes('vendor') ? 'vendor' : 'student';
+            const email = role === 'student' ? `${targetUser.toLowerCase()}@sece.ac.in` : `${targetUser.toLowerCase()}@vendor.snacktime.com`;
+            localUsers.push({ username: targetUser, email, password: newPwd, role });
+        }
+        localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
+
+        showNotification('✅ Password updated successfully! Please log in.', 'success');
         closeForgotPassword();
+        
+        // Prefill login username
+        const unameInput = $('username');
+        if (unameInput) unameInput.value = targetUser;
+        const pwdInput = $('password');
+        if (pwdInput) { pwdInput.value = ''; pwdInput.focus(); }
+    })
+    .catch(err => {
+        if (confirmBtn) { confirmBtn.innerText = 'Set New Password'; confirmBtn.disabled = false; }
+        
+        // Local fallback update
+        let localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
+        const idx = localUsers.findIndex(u => u.username.toLowerCase() === targetUser.toLowerCase());
+        if (idx >= 0) {
+            localUsers[idx].password = newPwd;
+        } else {
+            const role = targetUser.toLowerCase().includes('vendor') ? 'vendor' : 'student';
+            const email = role === 'student' ? `${targetUser.toLowerCase()}@sece.ac.in` : `${targetUser.toLowerCase()}@vendor.snacktime.com`;
+            localUsers.push({ username: targetUser, email, password: newPwd, role });
+        }
+        localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
+
+        showNotification('✅ Password updated successfully! Please log in.', 'success');
+        closeForgotPassword();
+
+        const unameInput = $('username');
+        if (unameInput) unameInput.value = targetUser;
+        const pwdInput = $('password');
+        if (pwdInput) { pwdInput.value = ''; pwdInput.focus(); }
     });
 }
 

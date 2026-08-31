@@ -23,14 +23,15 @@ const app    = express();
 const server = http.createServer(app);
 const io     = socketIo(server, {
     cors: {
-        origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-        methods: ['GET', 'POST']
+        origin: (origin, callback) => callback(null, true),
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        credentials: true
     }
 });
 
-// Trust Nginx reverse-proxy so req.secure works correctly
-if (process.env.NODE_ENV === 'production') {
-    app.set('trust proxy', 1);
+// Trust reverse-proxy / tunnels / Nginx so req.secure and client IPs work correctly
+app.set('trust proxy', 1);
+if (process.env.NODE_ENV === 'production' && process.env.FORCE_HTTPS === 'true') {
     app.use((req, res, next) => {
         if (req.secure) return next();
         res.redirect(301, 'https://' + req.headers.host + req.url);
@@ -106,7 +107,7 @@ app.use((req, res, next) => {
 
 app.use(cookieParser());
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: (origin, callback) => callback(null, true),
     credentials: true
 }));
 
@@ -133,12 +134,16 @@ const authLimiter = rateLimit({
     message: { message: 'Too many login/registration attempts, please try again in a minute.' }
 });
 
-// CSRF protection (cookie-based, SameSite=Strict)
+// CSRF protection
+// SameSite=none + Secure in production so cross-origin cookies work between
+// Firebase frontend (sece-amenity-project.web.app) and Render backend.
+// SameSite=lax in development so localhost still works without HTTPS.
+const IS_PROD = process.env.NODE_ENV === 'production';
 const csrfProtection = csrf({
     cookie: {
         httpOnly: true,
-        sameSite: 'strict',
-        secure: process.env.NODE_ENV === 'production'
+        sameSite: IS_PROD ? 'none' : 'lax',
+        secure: IS_PROD
     }
 });
 
@@ -191,7 +196,7 @@ app.post('/api/register', authLimiter, csrfProtection, async (req, res) => {
             return res.status(400).json({ message: 'Please use your college email (@sece.ac.in).' });
     }
 
-    const targetEmail = role === 'student'
+    const targetEmail = email
         ? email.toLowerCase()
         : `${username.toLowerCase()}@vendor.snacktime.com`;
 
@@ -236,17 +241,18 @@ app.post('/api/login', authLimiter, csrfProtection, async (req, res) => {
             return res.status(400).json({ message: 'Invalid credentials.' });
 
         const token = jwt.sign(
-            { username: user.username, role: user.role },
+            { id: user.id, username: user.username, role: user.role },
             JWT_SECRET,
             { expiresIn: '2h' }
         );
         res.cookie('jwt', token, {
             httpOnly: true,
-            sameSite: 'strict',
-            secure: process.env.NODE_ENV === 'production'
+            sameSite: IS_PROD ? 'none' : 'lax',
+            secure: IS_PROD
         });
 
         res.json({
+            id:        user.id,
             username:  user.username,
             email:     user.email,
             role:      user.role,
@@ -376,11 +382,11 @@ app.put('/api/inventory/:id/stock', authorize(['vendor']), async (req, res) => {
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id !== req.user.username)
+        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
             return res.status(403).json({ message: "Cannot modify another vendor's product." });
 
         await db.query('UPDATE inventory SET stock = ? WHERE id = ?', [stock, id]);
-        broadcastInventoryUpdate();
+        await broadcastInventoryUpdate();
         res.json({ message: 'Stock updated successfully.' });
     } catch (err) {
         console.error(err);
@@ -396,11 +402,11 @@ app.put('/api/inventory/:id/price', authorize(['vendor']), async (req, res) => {
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id !== req.user.username)
+        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
             return res.status(403).json({ message: "Cannot modify another vendor's product." });
 
         await db.query('UPDATE inventory SET price = ? WHERE id = ?', [price, id]);
-        broadcastInventoryUpdate();
+        await broadcastInventoryUpdate();
         res.json({ message: 'Price updated successfully.' });
     } catch (err) {
         console.error(err);
@@ -415,11 +421,11 @@ app.delete('/api/inventory/:id', authorize(['vendor']), async (req, res) => {
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id !== req.user.username)
+        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
             return res.status(403).json({ message: "Cannot delete another vendor's product." });
 
         await db.query('DELETE FROM inventory WHERE id = ?', [id]);
-        broadcastInventoryUpdate();
+        await broadcastInventoryUpdate();
         res.json({ message: 'Item deleted successfully.' });
     } catch (err) {
         console.error(err);
@@ -482,10 +488,22 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
     if (customer !== req.user.username)
         return res.status(403).json({ message: 'You can only place orders for yourself.' });
 
+    const studentUserId = req.user.id || null;
+    const vendorId = 1; // Default Sri Eshwar College Vendor ID
+
     const conn = await db.pool().getConnection();
     try {
         await conn.beginTransaction();
 
+        // 1. Idempotency Check: Prevent duplicate orders for the same ID
+        const [existingOrders] = await conn.query('SELECT id, status, token FROM orders WHERE id = ? FOR UPDATE', [id]);
+        if (existingOrders && existingOrders.length > 0) {
+            await conn.rollback();
+            conn.release();
+            return res.status(200).json({ ...existingOrders[0], message: 'Order already exists.' });
+        }
+
+        // 2. Concurrency Check: Row-level lock inventory and validate stock
         for (const cartItem of items) {
             const [rows] = await conn.query(
                 'SELECT stock, name FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
@@ -498,6 +516,7 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             }
         }
 
+        // 3. Atomically deduct inventory stock
         for (const cartItem of items) {
             await conn.query(
                 'UPDATE inventory SET stock = stock - ?, sold = sold + ? WHERE id = ?',
@@ -507,8 +526,8 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
 
         const orderStatus = status || 'pending';
         await conn.query(
-            'INSERT INTO orders (id, customer, total, status, time, placed_at, method, token, payment_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [id, customer, total, orderStatus, time, placedAt, method, token || null, paymentId || null]
+            'INSERT INTO orders (id, user_id, vendor_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [id, studentUserId, vendorId, customer, total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
         );
 
         for (const cartItem of items) {
@@ -521,14 +540,50 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         await conn.commit();
         conn.release();
 
-        const createdOrder = { id, customer, total, status: orderStatus, time, placedAt, method, items, token, paymentId };
-        broadcastOrderUpdate(createdOrder);
+        const createdOrder = {
+            id,
+            userId: studentUserId,
+            vendorId,
+            customer,
+            total,
+            status: orderStatus,
+            time,
+            placedAt,
+            method,
+            items,
+            token,
+            paymentId,
+            version: 1,
+            updatedAt: Date.now()
+        };
+
+        // Standardized WebSocket Event: order.created
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'order.created',
+            version: 1,
+            orderId: id,
+            userId: studentUserId,
+            vendorId,
+            order: createdOrder,
+            updatedAt: Date.now()
+        };
+
+        // Targeted emission: To vendor room, to student's user room, and to order room
+        io.to(`vendor:${vendorId}`).emit('order.created', eventPayload);
+        if (studentUserId) {
+            io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
+        }
+        io.to(`student_${customer}`).emit('orders_updated', createdOrder); // Legacy compatibility
+
+        // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
+
         res.status(201).json(createdOrder);
     } catch (err) {
         await conn.rollback();
         conn.release();
-        console.error(err);
+        console.error('Database checkout error:', err);
         res.status(500).json({ message: 'Database checkout error.' });
     }
 });
@@ -537,6 +592,15 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
 app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
     const { id } = req.params;
     const { status, cancelReason } = req.body;
+
+    const allowedTransitions = {
+        'pending': ['preparing', 'cancelled'],
+        'preparing': ['ready', 'cancelled'],
+        'ready': ['completed', 'cancelled'],
+        'completed': [],
+        'cancelled': [],
+        'expired': []
+    };
 
     const conn = await db.pool().getConnection();
     try {
@@ -550,8 +614,18 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
         }
 
         const currentOrder = orders[0];
+        const currentStatus = currentOrder.status;
 
-        if (status === 'cancelled' || status === 'expired') {
+        // Validate allowed state transition
+        if (allowedTransitions[currentStatus] && !allowedTransitions[currentStatus].includes(status) && currentStatus !== status) {
+            await conn.rollback();
+            conn.release();
+            return res.status(400).json({ message: `Cannot transition order from ${currentStatus} to ${status}.` });
+        }
+
+        // Restore inventory stock on cancellation / expiration
+        let stockRestored = false;
+        if ((status === 'cancelled' || status === 'expired') && (currentStatus !== 'cancelled' && currentStatus !== 'expired')) {
             const [items] = await conn.query('SELECT * FROM order_items WHERE order_id = ?', [id]);
             for (const item of items) {
                 await conn.query(
@@ -559,24 +633,56 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
                     [item.qty, item.qty, item.item_id]
                 );
             }
+            stockRestored = true;
         }
 
+        const newVersion = (currentOrder.version || 1) + 1;
         await conn.query(
-            'UPDATE orders SET status = ?, cancel_reason = ? WHERE id = ?',
-            [status, cancelReason || null, id]
+            'UPDATE orders SET status = ?, cancel_reason = ?, version = ? WHERE id = ?',
+            [status, cancelReason || null, newVersion, id]
         );
 
         await conn.commit();
         conn.release();
 
-        const updatedOrder = { ...currentOrder, status, cancel_reason: cancelReason || null };
-        broadcastOrderUpdate(updatedOrder);
-        broadcastInventoryUpdate();
+        const updatedOrder = {
+            ...currentOrder,
+            status,
+            cancel_reason: cancelReason || null,
+            version: newVersion,
+            updatedAt: Date.now()
+        };
+
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'order.status_changed',
+            version: newVersion,
+            orderId: id,
+            userId: currentOrder.user_id,
+            vendorId: currentOrder.vendor_id || 1,
+            status,
+            cancelReason: cancelReason || null,
+            token: currentOrder.token,
+            updatedAt: Date.now()
+        };
+
+        // Targeted emission to student, vendor, and order rooms
+        if (currentOrder.user_id) {
+            io.to(`user:${currentOrder.user_id}`).emit('order.status_changed', eventPayload);
+        }
+        io.to(`student_${currentOrder.customer}`).emit('order_status_changed', updatedOrder); // Legacy compatibility
+        io.to(`vendor:${currentOrder.vendor_id || 1}`).emit('order.status_changed', eventPayload);
+        io.to(`order:${id}`).emit('order.status_changed', eventPayload);
+
+        if (stockRestored) {
+            broadcastInventoryUpdate();
+        }
+
         res.json(updatedOrder);
     } catch (err) {
         await conn.rollback();
         conn.release();
-        console.error(err);
+        console.error('Error updating order status:', err);
         res.status(500).json({ message: 'Error updating order status.' });
     }
 });
@@ -597,11 +703,32 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
             'UPDATE orders SET rating = ?, feedback = ? WHERE id = ?',
             [rating, feedback || null, orderId]
         );
-        io.emit('reviews_updated');
-        res.status(201).json({ message: 'Review submitted successfully!' });
+
+        const newReview = {
+            orderId,
+            customer,
+            items,
+            rating: Number(rating),
+            feedback: feedback || null,
+            time
+        };
+
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'review.created',
+            vendorId: 1,
+            review: newReview,
+            updatedAt: Date.now()
+        };
+
+        io.to('vendor:1').emit('review.created', eventPayload);
+        io.to('vendors').emit('review.created', eventPayload);
+        io.to('vendors').emit('reviews_updated', newReview); // Legacy compatibility
+
+        res.status(201).json({ message: 'Review submitted successfully.' });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: 'Error submitting review.' });
+        console.error('Error submitting review:', err);
+        res.status(500).json({ message: 'Error saving review.' });
     }
 });
 
@@ -743,50 +870,197 @@ app.use((err, req, res, next) => {
 });
 
 // ── REAL-TIME (SOCKET.IO) ────────────────────────────────────────────────────
+function parseCookies(cookieHeader) {
+    const list = {};
+    if (!cookieHeader) return list;
+    cookieHeader.split(';').forEach(cookie => {
+        let [name, ...rest] = cookie.split('=');
+        name = name.trim();
+        if (!name) return;
+        const value = rest.join('=').trim();
+        if (!value) return;
+        list[name] = decodeURIComponent(value);
+    });
+    return list;
+}
+
+// Authenticate WebSocket connection during handshake using HttpOnly cookie
+io.use(async (socket, next) => {
+    try {
+        const cookieHeader = socket.request.headers.cookie || '';
+        const cookies = parseCookies(cookieHeader);
+        const token = cookies.jwt;
+        if (token) {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            if (!decoded.id && decoded.username) {
+                const [users] = await db.query('SELECT id FROM users WHERE username = ?', [decoded.username]);
+                if (users && users.length > 0) decoded.id = users[0].id;
+            }
+            socket.user = decoded;
+        }
+    } catch (e) {
+        // Socket connects as guest if unauthenticated / expired
+    }
+    next();
+});
+
 io.on('connection', (socket) => {
-    console.log('⚡ Client connected:', socket.id);
+    // Automatically join authorized rooms based on verified identity
+    if (socket.user && socket.user.id) {
+        if (socket.user.role === 'student') {
+            socket.join(`user:${socket.user.id}`);
+            socket.join(`student_${socket.user.username}`); // Legacy compatibility
+            console.log(`⚡ Authenticated Student Socket ${socket.id} (User ID: ${socket.user.id}) joined user:${socket.user.id}`);
+        } else if (socket.user.role === 'vendor') {
+            socket.join(`vendor:${socket.user.id}`);
+            socket.join('vendors'); // Legacy compatibility
+            console.log(`⚡ Authenticated Vendor Socket ${socket.id} (Vendor ID: ${socket.user.id}) joined vendor:${socket.user.id}`);
+        }
+    }
+
+    // Join public menu & shop status rooms
+    socket.join('menu:1');
+    socket.join('shop:main');
+
+    // Secure Order Room Joining (Allows student owner or vendor to join order room)
+    socket.on('join_order', async (orderId) => {
+        if (!orderId || typeof orderId !== 'string') return;
+        if (socket.user) {
+            if (socket.user.role === 'vendor') {
+                socket.join(`order:${orderId}`);
+            } else {
+                try {
+                    const [orders] = await db.query('SELECT user_id, customer FROM orders WHERE id = ?', [orderId]);
+                    if (orders && orders.length > 0) {
+                        const ord = orders[0];
+                        if (ord.user_id === socket.user.id || ord.customer === socket.user.username) {
+                            socket.join(`order:${orderId}`);
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
+    });
 
     socket.on('join_room', (room) => {
-        socket.join(room);
-        console.log(`Socket ${socket.id} joined room: ${room}`);
+        if (room) socket.join(room);
     });
 
     // Client emitted order placement
-    socket.on('place_order', (orderPayload) => {
-        io.to('vendors').emit('orders_updated', orderPayload);
+    socket.on('place_order', (payload) => {
+        if (!payload) return;
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'order.created',
+            orderId: payload.id,
+            order: payload,
+            version: 1,
+            updatedAt: Date.now()
+        };
+        io.to('vendors').emit('orders_updated', payload);
+        io.to('vendor:1').emit('order.created', eventPayload);
+        io.emit('orders_updated', payload);
+        io.emit('order.created', eventPayload);
     });
 
     // Client emitted order status update
-    socket.on('update_order_status', (orderData) => {
-        if (orderData && orderData.customer) {
-            io.to(`student_${orderData.customer}`).emit('order_status_changed', orderData);
+    socket.on('update_order_status', (payload) => {
+        if (!payload) return;
+        const orderId = payload.id || payload.orderId;
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'order.status_changed',
+            orderId: orderId,
+            status: payload.status,
+            customer: payload.customer,
+            cancelReason: payload.cancelReason || null,
+            token: payload.token || null,
+            version: payload.version || 2,
+            updatedAt: Date.now()
+        };
+        io.to('vendors').emit('orders_updated', payload);
+        io.to('vendor:1').emit('order.status_changed', eventPayload);
+        if (payload.customer) {
+            io.to(`student_${payload.customer}`).emit('order_status_changed', payload);
         }
-        io.to('vendors').emit('orders_updated', orderData);
+        if (payload.userId) {
+            io.to(`user:${payload.userId}`).emit('order.status_changed', eventPayload);
+        }
+        io.emit('order_status_changed', payload);
+        io.emit('order.status_changed', eventPayload);
     });
 
     // Client emitted inventory update
-    socket.on('update_inventory', (inventoryData) => {
-        io.emit('inventory_updated', inventoryData);
+    socket.on('update_inventory', (payload) => {
+        io.emit('inventory_updated', payload);
+        io.emit('inventory.updated', {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'inventory.updated',
+            inventory: payload,
+            updatedAt: Date.now()
+        });
     });
 
-    // Client emitted reviews/feedback update
-    socket.on('update_reviews', (reviewsData) => {
-        io.to('vendors').emit('reviews_updated', reviewsData);
+    // Client emitted reviews update
+    socket.on('update_reviews', (payload) => {
+        io.to('vendors').emit('reviews_updated', payload);
+        io.to('vendor:1').emit('review.created', {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'review.created',
+            review: payload,
+            updatedAt: Date.now()
+        });
+        io.emit('reviews_updated', payload);
+        io.emit('review.created', {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'review.created',
+            review: payload,
+            updatedAt: Date.now()
+        });
     });
 
-    socket.on('disconnect', () => {
-        console.log('Client disconnected:', socket.id);
-    });
+    socket.on('disconnect', () => {});
 });
 
-function broadcastInventoryUpdate() { io.emit('inventory_updated'); }
-function broadcastOrderUpdate(order) {
-    if (order && order.customer) {
-        io.to(`student_${order.customer}`).emit('order_status_changed', order);
+async function broadcastInventoryUpdate() {
+    try {
+        const [items] = await db.query('SELECT * FROM inventory');
+        const formatted = items.map(item => ({
+            id:            item.id,
+            name:          item.name,
+            price:         Number(item.price),
+            stock:         Number(item.stock),
+            sold:          Number(item.sold),
+            isSpecial:     Boolean(item.is_special),
+            originalPrice: item.original_price ? Number(item.original_price) : null
+        }));
+
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'inventory.updated',
+            vendorId: 1,
+            inventory: formatted,
+            updatedAt: Date.now()
+        };
+
+        io.emit('inventory.updated', eventPayload);
+        io.emit('inventory_updated', formatted); // Legacy compatibility
+    } catch (e) {
+        io.emit('inventory_updated');
     }
-    io.to('vendors').emit('orders_updated', order);
 }
-function broadcastShopStatus(status) { io.emit('shop_status_changed', status); }
+
+function broadcastShopStatus(settings) {
+    const eventPayload = {
+        eventId: 'evt_' + crypto.randomUUID(),
+        event: 'shop.status_changed',
+        shopOpen: settings ? settings.shopOpen : true,
+        breakEndTime: settings ? settings.breakEndTime : null,
+        updatedAt: Date.now()
+    };
+    io.emit('shop.status_changed', eventPayload);
+    io.emit('shop_status_changed', settings); // Legacy compatibility
+}
 
 // ── NODEMAILER ───────────────────────────────────────────────────────────────
 const SMTP_CONFIG = {
@@ -830,8 +1104,12 @@ async function startServer() {
         await initNodemailer();
 
         const listenOnPort = (port) => {
-            server.listen(port, () => {
-                console.log(`SNACK TIME Backend running on http://localhost:${port}`);
+            server.listen(port, '0.0.0.0', () => {
+                console.log(`\n=================================================================`);
+                console.log(`  🍔 SNACK TIME Backend Server Active!`);
+                console.log(`  🏠 Local URL:    http://localhost:${port}`);
+                console.log(`  📱 Network URL:  http://192.168.1.3:${port}`);
+                console.log(`=================================================================\n`);
             }).on('error', (err) => {
                 if ((err.code === 'EACCES' || err.code === 'EADDRINUSE') && port === PORT) {
                     console.log(`Port ${PORT} busy. Trying ${ALT_PORT}...`);

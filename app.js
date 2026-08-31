@@ -1,6 +1,5 @@
-// ========================= COLLEGE SERVER & API CONFIGURATION =========================
-// Set custom server IP/Domain here for College Server deployment (e.g., 'https://snacktime.sece.ac.in' or 'http://192.168.1.100:3000')
-const SERVER_BASE_URL = window.SNACKTIME_SERVER_URL || localStorage.getItem('custom_server_url') || '';
+const $ = id => document.getElementById(id);
+const SERVER_BASE_URL = window.SNACKTIME_SERVER_URL || localStorage.getItem('custom_server_url') || (window.location.port === '3000' ? '' : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:3000' : ''));
 
 let csrfToken = '';
 
@@ -43,6 +42,8 @@ async function fetchCsrfToken() {
 
 document.addEventListener('DOMContentLoaded', () => {
     fetchCsrfToken();
+    initSocketConnection();
+    initUniversalWebRTCEngine();
 });
 
 async function apiFetch(url, options = {}) {
@@ -61,8 +62,171 @@ async function apiFetch(url, options = {}) {
     return fetch(fullUrl, options);
 }
 
-// ========================= REAL-TIME BROADCAST ENGINE =========================
+// ========================= TRIPLE-REDUNDANT REAL-TIME BROADCAST ENGINE =========================
 const snacktimeChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('snacktime_realtime_channel') : null;
+let appSocket = null;
+let cloudWs = null;
+
+function updateConnectionIndicator(status) {
+    const indicators = document.querySelectorAll('.live-connection-badge');
+    indicators.forEach(el => {
+        if (status === 'connected') {
+            el.innerHTML = '<span class="status-dot green"></span> Live';
+            el.className = 'live-connection-badge connected';
+        } else if (status === 'reconnecting') {
+            el.innerHTML = '<span class="status-dot orange"></span> Reconnecting...';
+            el.className = 'live-connection-badge reconnecting';
+        }
+    });
+}
+
+function initSocketConnection() {
+    if (typeof io === 'undefined') return;
+    if (appSocket && appSocket.connected) return;
+
+    try {
+        const socketOpts = {
+            withCredentials: true,
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            timeout: 10000
+        };
+
+        const connectUrl = SERVER_BASE_URL || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:3000' : window.location.origin);
+        appSocket = io(connectUrl, socketOpts);
+
+        appSocket.on('connect', () => {
+            console.log('⚡ Connected to SNACK TIME Real-Time Socket.io Server:', appSocket.id);
+            updateConnectionIndicator('connected');
+
+            // Re-join authorized rooms and recover state if logged in
+            if (currentUser && currentUser.role) {
+                startDatabaseSync(currentUser.role);
+            }
+        });
+
+        appSocket.on('disconnect', () => {
+            console.log('🔌 Disconnected from Socket.io Server. Attempting automatic reconnection...');
+            updateConnectionIndicator('reconnecting');
+        });
+
+        appSocket.on('connect_error', () => {
+            updateConnectionIndicator('reconnecting');
+        });
+    } catch (e) {
+        console.log('Socket initialization notice:', e);
+    }
+}
+
+let webrtcPeer = null;
+let activePeerConnections = [];
+
+function initUniversalWebRTCEngine() {
+    if (typeof Peer === 'undefined') return;
+    try {
+        let activeRole = currentUser ? currentUser.role : null;
+        if (!activeRole) {
+            try {
+                const s = JSON.parse(localStorage.getItem('snacktime_session') || 'null');
+                if (s && s.role) activeRole = s.role;
+            } catch (e) {}
+        }
+
+        const isVendor = (activeRole === 'vendor');
+        const peerId = isVendor ? 'snacktime-sece-vendor-main' : ('snacktime-sece-student-' + Math.random().toString(36).substr(2, 9));
+
+        if (webrtcPeer) {
+            try { webrtcPeer.destroy(); } catch (e) {}
+            webrtcPeer = null;
+        }
+
+        webrtcPeer = new Peer(peerId, {
+            debug: 0,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun.services.mozilla.com' }
+                ]
+            }
+        });
+
+        webrtcPeer.on('open', (id) => {
+            console.log('⚡ Universal In-App Real-Time WebRTC Mesh active, peer ID:', id);
+            updateConnectionIndicator('connected');
+            if (!isVendor) {
+                connectToVendorPeer();
+            }
+        });
+
+        webrtcPeer.on('connection', (conn) => {
+            conn.on('open', () => {
+                if (!activePeerConnections.includes(conn)) {
+                    activePeerConnections.push(conn);
+                }
+            });
+            conn.on('data', (data) => {
+                if (data && data.type && data.payload) {
+                    const myUser = currentUser ? currentUser.username : '';
+                    if (data.sender && myUser && data.sender === myUser) return;
+                    handleRealtimeEvent(data.type, data.payload);
+                }
+            });
+            conn.on('close', () => {
+                activePeerConnections = activePeerConnections.filter(c => c !== conn);
+            });
+            conn.on('error', () => {
+                activePeerConnections = activePeerConnections.filter(c => c !== conn);
+            });
+        });
+
+        webrtcPeer.on('error', (err) => {
+            if (err.type === 'unavailable-id') {
+                if (isVendor) {
+                    webrtcPeer = new Peer('snacktime-sece-vendor-' + Math.random().toString(36).substr(2, 6));
+                }
+            } else if (err.type === 'peer-unavailable') {
+                if (!isVendor) {
+                    setTimeout(connectToVendorPeer, 4000);
+                }
+            }
+        });
+    } catch (e) {
+        console.log('WebRTC engine notice:', e);
+    }
+}
+
+function connectToVendorPeer() {
+    if (!webrtcPeer || webrtcPeer.destroyed) return;
+    try {
+        const vendorId = 'snacktime-sece-vendor-main';
+        const conn = webrtcPeer.connect(vendorId, { reliable: true });
+        conn.on('open', () => {
+            console.log('⚡ Connected to Vendor Dashboard via Direct WebRTC DataChannel!');
+            if (!activePeerConnections.includes(conn)) {
+                activePeerConnections.push(conn);
+            }
+        });
+        conn.on('data', (data) => {
+            if (data && data.type && data.payload) {
+                const myUser = currentUser ? currentUser.username : '';
+                if (data.sender && myUser && data.sender === myUser) return;
+                handleRealtimeEvent(data.type, data.payload);
+            }
+        });
+        conn.on('close', () => {
+            activePeerConnections = activePeerConnections.filter(c => c !== conn);
+            setTimeout(connectToVendorPeer, 4000);
+        });
+        conn.on('error', () => {
+            activePeerConnections = activePeerConnections.filter(c => c !== conn);
+            setTimeout(connectToVendorPeer, 5000);
+        });
+    } catch (e) {}
+}
 
 function broadcastRealtimeEvent(type, payload) {
     const msg = {
@@ -81,40 +245,76 @@ function broadcastRealtimeEvent(type, payload) {
         }
     }
 
-    // 2. High-Performance Socket.io Engine (Cross-device real-time sync)
-    if (typeof appSocket !== 'undefined' && appSocket && appSocket.connected) {
-        if (type === 'NEW_ORDER') {
-            appSocket.emit('place_order', payload);
-        } else if (type === 'ORDER_STATUS_CHANGED') {
-            appSocket.emit('update_order_status', payload);
-        } else if (type === 'INVENTORY_UPDATED') {
-            appSocket.emit('update_inventory', payload);
-        } else if (type === 'REVIEWS_UPDATED') {
-            appSocket.emit('update_reviews', payload);
+    // 2. Universal In-App WebRTC Real-Time Mesh (Direct P2P across any 4G / Wi-Fi / Laptop)
+    activePeerConnections.forEach(conn => {
+        if (conn && conn.open) {
+            try {
+                conn.send(msg);
+            } catch (e) {}
         }
+    });
+
+    // 3. High-Performance Socket.io Engine (Node.js + MySQL Backend)
+    if (appSocket && appSocket.connected) {
+        try {
+            if (type === 'NEW_ORDER') {
+                appSocket.emit('place_order', payload);
+            } else if (type === 'ORDER_STATUS_CHANGED') {
+                appSocket.emit('update_order_status', payload);
+            } else if (type === 'INVENTORY_UPDATED') {
+                appSocket.emit('update_inventory', payload);
+            } else if (type === 'REVIEWS_UPDATED') {
+                appSocket.emit('update_reviews', payload);
+            }
+        } catch (e) {}
     }
 }
+
+// Track recently processed event keys to prevent double notification chimes within 500ms
+const processedRealtimeKeys = new Set();
 
 function handleRealtimeEvent(type, payload) {
     if (!type || !payload) return;
 
-    if (type === 'NEW_ORDER') {
-        // A student placed an order
-        const existing = allOrders.find(o => o.id === payload.id);
-        if (!existing) {
-            allOrders.unshift(payload);
-            liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-            try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
-        }
+    // Deduplicate identical events arriving within 1 second
+    const eventId = payload.id || payload.orderId || JSON.stringify(payload).slice(0, 30);
+    const eventKey = `${type}_${eventId}`;
+    const now = Date.now();
 
-        if (currentUser && currentUser.role === 'vendor') {
+    const isDuplicate = processedRealtimeKeys.has(eventKey);
+    if (!isDuplicate) {
+        processedRealtimeKeys.add(eventKey);
+        setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
+    }
+
+    // Determine current role from session if currentUser variable isn't set yet
+    let activeRole = currentUser ? currentUser.role : null;
+    if (!activeRole) {
+        try {
+            const sess = JSON.parse(localStorage.getItem('snacktime_session') || 'null');
+            if (sess && sess.role) activeRole = sess.role;
+        } catch (e) {}
+    }
+
+    if (type === 'NEW_ORDER') {
+        const existingIdx = allOrders.findIndex(o => o.id === payload.id);
+        if (existingIdx >= 0) {
+            allOrders[existingIdx] = payload;
+        } else {
+            allOrders.unshift(payload);
+        }
+        liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+        try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
+
+        if (activeRole === 'vendor') {
             renderVendorOrders();
             updateVendorOrderBadge(liveOrders.length);
-            triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${payload.id} - ${payload.customer || 'Student'} (₹${payload.total})`);
-            playOrderAlertSound();
+            if (!isDuplicate) {
+                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${payload.id} - ${payload.customer || 'Student'} (₹${payload.total || 0})`);
+                playOrderAlertSound();
+            }
         }
     } else if (type === 'ORDER_STATUS_CHANGED') {
-        // Vendor updated order status
         const targetOrder = allOrders.find(o => o.id === payload.id);
         if (targetOrder) {
             targetOrder.status = payload.status;
@@ -125,28 +325,30 @@ function handleRealtimeEvent(type, payload) {
         liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
         try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
 
-        if (currentUser && currentUser.role === 'student' && (currentUser.username === payload.customer || !payload.customer)) {
+        const username = currentUser ? currentUser.username : '';
+        if (activeRole === 'student' && (!payload.customer || payload.customer === username)) {
             currentOrder = payload;
             updateTrackingUI(payload.status);
             updateTrackingTimeline(payload.status);
             renderInlineOrderHistory();
 
-            const statusLower = (payload.status || '').toLowerCase();
-            if (statusLower === 'preparing') {
-                triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${payload.id}`);
-            } else if (statusLower === 'ready') {
-                triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${payload.id} is ready! Token: ${payload.token || ''}`);
-            } else if (statusLower === 'completed') {
-                triggerLiveNotification('✅ Order Completed', `Order #${payload.id} collected. Thank you!`);
-            } else if (statusLower === 'cancelled') {
-                triggerLiveNotification('❌ Order Cancelled', `Order #${payload.id} was cancelled.`);
+            if (!isDuplicate) {
+                const statusLower = (payload.status || '').toLowerCase();
+                if (statusLower === 'preparing') {
+                    triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${payload.id}`);
+                } else if (statusLower === 'ready') {
+                    triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${payload.id} is ready! Token: ${payload.token || ''}`);
+                } else if (statusLower === 'completed') {
+                    triggerLiveNotification('✅ Order Completed', `Order #${payload.id} collected. Thank you!`);
+                } else if (statusLower === 'cancelled') {
+                    triggerLiveNotification('❌ Order Cancelled', `Order #${payload.id} was cancelled.`);
+                }
             }
-        } else if (currentUser && currentUser.role === 'vendor') {
+        } else if (activeRole === 'vendor') {
             renderVendorOrders();
             updateVendorOrderBadge(liveOrders.length);
         }
     } else if (type === 'INVENTORY_UPDATED') {
-        // Vendor or Student order updated stock, price, or items
         if (Array.isArray(payload)) {
             inventory = payload;
         } else if (payload && payload.id) {
@@ -157,7 +359,7 @@ function handleRealtimeEvent(type, payload) {
         try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
         applyDailySpecials();
 
-        if (currentUser && currentUser.role === 'vendor') {
+        if (activeRole === 'vendor') {
             renderInventory();
         } else {
             renderMenu();
@@ -169,7 +371,7 @@ function handleRealtimeEvent(type, payload) {
             allReviews.unshift(payload);
         }
         try { localStorage.setItem('snacktime_reviews', JSON.stringify(allReviews)); } catch (e) {}
-        if (currentUser && currentUser.role === 'vendor') {
+        if (activeRole === 'vendor') {
             renderVendorReviews();
         }
     }
@@ -182,52 +384,25 @@ if (snacktimeChannel) {
     };
 }
 
-
 // Multi-window / Multi-tab localStorage listener fallback
-// NOTE: The 'storage' event only fires in OTHER tabs, not the one that wrote the data.
-// This complements BroadcastChannel which fires in ALL tabs including sender.
 window.addEventListener('storage', (event) => {
     if (event.key === 'snacktime_orders' && event.newValue) {
         try {
             const orders = JSON.parse(event.newValue);
-            const prevLiveCount = liveOrders.length;
-            allOrders = orders;
-            liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-
-            if (currentUser && currentUser.role === 'vendor') {
-                renderVendorOrders();
-                updateVendorOrderBadge(liveOrders.length);
-                if (liveOrders.length > prevLiveCount) {
-                    const newest = liveOrders[0];
-                    triggerLiveNotification('🔔 NEW ORDER!', `Order from ${newest.customer || 'Student'} (₹${newest.total || ''})`);
-                    playOrderAlertSound();
-                }
-            } else if (currentUser && currentUser.role === 'student') {
-                renderInlineOrderHistory();
-                if (currentOrder) {
-                    const updated = allOrders.find(o => o.id === currentOrder.id);
-                    if (updated && updated.status !== currentOrder.status) {
-                        currentOrder.status = updated.status;
-                        updateTrackingUI(updated.status);
-                        updateTrackingTimeline(updated.status);
-                        const s = updated.status.toLowerCase();
-                        if (s === 'preparing') triggerLiveNotification('👨‍🍳 Order Preparing!', `Kitchen is preparing Order #${updated.id}`);
-                        else if (s === 'ready') triggerLiveNotification('🔔 Order READY!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`);
-                        else if (s === 'completed') triggerLiveNotification('✅ Completed', `Order #${updated.id} collected. Thank you!`);
-                        else if (s === 'cancelled') triggerLiveNotification('❌ Cancelled', `Order #${updated.id} was cancelled.`);
-                    }
-                }
+            const newest = orders[0];
+            if (newest) {
+                handleRealtimeEvent('NEW_ORDER', newest);
             }
         } catch (e) {}
     } else if (event.key === 'snacktime_inventory' && event.newValue) {
         try {
             const items = JSON.parse(event.newValue);
-            if (Array.isArray(items) && items.length > 0) {
-                inventory = items;
-                applyDailySpecials();
-                if (currentUser && currentUser.role === 'vendor') renderInventory();
-                else renderMenu();
-            }
+            handleRealtimeEvent('INVENTORY_UPDATED', items);
+        } catch (e) {}
+    } else if (event.key === 'snacktime_reviews' && event.newValue) {
+        try {
+            const reviews = JSON.parse(event.newValue);
+            handleRealtimeEvent('REVIEWS_UPDATED', reviews);
         } catch (e) {}
     }
 });
@@ -238,7 +413,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1787935959487';
+const APP_VERSION = '1.0.8.1788190628994';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -359,16 +534,12 @@ function applyDailySpecials() {
 let liveOrders = [];
 let allOrders = [];
 
-let appSocket = null;
-if (typeof io !== 'undefined') {
-    try { appSocket = SERVER_BASE_URL ? io(SERVER_BASE_URL) : io(); } catch (e) {}
-}
 
 function startDatabaseSync(role) {
     stopDatabaseSync();
 
     // Check if Node.js + MySQL REST API backend is available
-    fetch('/api/inventory')
+    apiFetch('/api/inventory')
         .then(res => {
             if (!res.ok) throw new Error("MySQL API not available");
             return res.json();
@@ -384,13 +555,14 @@ function startDatabaseSync(role) {
             });
 
             // Fetch live orders from MySQL API
-            fetch('/api/orders')
+            apiFetch('/api/orders')
                 .then(r => safeParseJson(r))
                 .then(orders => {
                     allOrders = orders;
                     liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
                     if (role === 'vendor') {
                         renderVendorOrders();
+                        renderVendorOrderHistory();
                         updateVendorOrderBadge(liveOrders.length);
                     } else if (role === 'student') {
                         renderInlineOrderHistory();
@@ -399,7 +571,7 @@ function startDatabaseSync(role) {
                 .catch(err => console.log('MySQL orders fetch notice:', err.message));
 
             // Fetch shop settings
-            fetch('/api/settings')
+            apiFetch('/api/settings')
                 .then(r => safeParseJson(r))
                 .then(settings => {
                     shopOpen = settings.shopOpen;
@@ -410,83 +582,163 @@ function startDatabaseSync(role) {
 
             // Socket.io Real-Time Event Listeners
             if (appSocket) {
-                const joinUserRoom = () => {
-                    if (currentUser) {
-                        const roomName = role === 'vendor' ? 'vendors' : `student_${currentUser.username}`;
-                        appSocket.emit('join_room', roomName);
+                // Remove previous listeners to prevent duplicate triggers
+                appSocket.off('order.created');
+                appSocket.off('order.status_changed');
+                appSocket.off('inventory.updated');
+                appSocket.off('review.created');
+                appSocket.off('shop.status_changed');
+                appSocket.off('orders_updated');
+                appSocket.off('order_status_changed');
+                appSocket.off('inventory_updated');
+                appSocket.off('reviews_updated');
+                appSocket.off('shop_status_changed');
+
+                // 1. Standardized Event: order.created
+                const handleOrderCreated = (eventPayload) => {
+                    const order = eventPayload.order || eventPayload;
+                    if (!order || !order.id) return;
+
+                    const eventKey = 'order.created_' + order.id;
+                    if (processedRealtimeKeys.has(eventKey)) return;
+                    processedRealtimeKeys.add(eventKey);
+                    setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
+
+                    const idx = allOrders.findIndex(o => o.id === order.id);
+                    if (idx !== -1) allOrders[idx] = order;
+                    else allOrders.unshift(order);
+
+                    liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+
+                    if (role === 'vendor') {
+                        renderVendorOrders();
+                        renderVendorOrderHistory();
+                        updateVendorOrderBadge(liveOrders.length);
+                        triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
+                        playOrderAlertSound();
+                        announceOrderStatus(order, 'pending');
+                    } else if (role === 'student') {
+                        renderInlineOrderHistory();
                     }
                 };
-                joinUserRoom();
-                appSocket.off('connect').on('connect', joinUserRoom);
 
-                appSocket.off('inventory_updated').on('inventory_updated', () => {
-                    fetch('/api/inventory').then(r=>safeParseJson(r)).then(cloudItems => {
-                        inventory = cloudItems;
-                        applyDailySpecials();
-                        if (role === 'student') renderMenu();
-                        if (role === 'vendor') renderInventory();
-                    }).catch(() => {});
-                });
+                appSocket.on('order.created', handleOrderCreated);
+                appSocket.on('orders_updated', handleOrderCreated); // Legacy compatibility
 
-                appSocket.off('orders_updated').on('orders_updated', (newOrderPayload) => {
-                    const prevLiveCount = liveOrders.length;
-                    fetch('/api/orders').then(r=>safeParseJson(r)).then(cloudOrders => {
-                        allOrders = cloudOrders;
-                        liveOrders = cloudOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+                // 2. Standardized Event: order.status_changed
+                const handleOrderStatusChanged = (eventPayload) => {
+                    const orderId = eventPayload.orderId || eventPayload.id;
+                    if (!orderId) return;
 
-                        if (role === 'vendor') {
-                            renderVendorOrders();
-                            updateVendorOrderBadge(liveOrders.length);
-                            if (liveOrders.length > prevLiveCount) {
-                                const newOrder = newOrderPayload || liveOrders[0];
-                                const customer = newOrder ? (newOrder.customer || 'Student') : 'Student';
-                                const totalAmt = newOrder && newOrder.total ? ` (₹${newOrder.total})` : '';
-                                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order from ${customer}${totalAmt}`);
-                            }
-                        } else if (role === 'student') {
-                            renderInlineOrderHistory();
-                        }
-                    });
-                });
+                    const newStatus = eventPayload.status;
+                    const eventVersion = eventPayload.version || 1;
 
-                appSocket.off('order_status_changed').on('order_status_changed', (updated) => {
-                    if (!updated || !updated.id) return;
-                    const idx = allOrders.findIndex(o => o.id === updated.id);
-                    if (idx !== -1) allOrders[idx] = updated;
-                    else allOrders.unshift(updated);
+                    const targetOrder = allOrders.find(o => o.id === orderId);
+                    if (targetOrder) {
+                        // Stale event protection: ignore older version events
+                        if (targetOrder.version && eventVersion < targetOrder.version) return;
+                        targetOrder.status = newStatus;
+                        targetOrder.version = eventVersion;
+                        if (eventPayload.cancelReason) targetOrder.cancelReason = eventPayload.cancelReason;
+                    } else {
+                        allOrders.unshift({
+                            id: orderId,
+                            status: newStatus,
+                            customer: eventPayload.customer,
+                            version: eventVersion
+                        });
+                    }
 
                     liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
                     if (role === 'student') {
-                        const isMyOrder = currentUser && (updated.customer === currentUser.username);
-                        if (isMyOrder) {
-                            currentOrder = updated;
-                            updateTrackingUI(updated.status);
-                            updateTrackingTimeline(updated.status);
+                        const isMyOrder = (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
+                                          (currentUser && eventPayload.customer === currentUser.username) ||
+                                          (currentOrder && currentOrder.id === orderId);
 
-                            const statusLower = (updated.status || '').toLowerCase();
+                        if (isMyOrder) {
+                            if (currentOrder && currentOrder.id === orderId) {
+                                currentOrder.status = newStatus;
+                                currentOrder.version = eventVersion;
+                            }
+                            updateTrackingUI(newStatus);
+                            updateTrackingTimeline(newStatus);
+
+                            const statusLower = (newStatus || '').toLowerCase();
                             if (statusLower === 'preparing') {
-                                triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${updated.id}`);
+                                triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${orderId}`);
                             } else if (statusLower === 'ready') {
-                                triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`);
+                                triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
+                                playOrderAlertSound();
                             } else if (statusLower === 'completed') {
-                                triggerLiveNotification('✅ Order Completed', `Order #${updated.id} collected. Thank you!`);
+                                triggerLiveNotification('✅ Order Completed', `Order #${orderId} collected. Thank you!`);
                             } else if (statusLower === 'cancelled') {
-                                triggerLiveNotification('❌ Order Cancelled', `Order #${updated.id} was cancelled.`);
+                                triggerLiveNotification('❌ Order Cancelled', `Order #${orderId} was cancelled.`);
                             }
                         }
                         renderInlineOrderHistory();
                     } else if (role === 'vendor') {
                         renderVendorOrders();
+                        renderVendorOrderHistory();
                         updateVendorOrderBadge(liveOrders.length);
+                        const statusLower = (newStatus || '').toLowerCase();
+                        if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
+                            const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
+                            announceOrderStatus(readyOrder, statusLower);
+                        }
                     }
-                });
+                };
 
-                appSocket.off('shop_status_changed').on('shop_status_changed', (settings) => {
-                    shopOpen = settings.shopOpen;
-                    breakEndTime = settings.breakEndTime;
+                appSocket.on('order.status_changed', handleOrderStatusChanged);
+                appSocket.on('order_status_changed', handleOrderStatusChanged); // Legacy compatibility
+
+                // 3. Standardized Event: inventory.updated
+                const handleInventoryUpdated = (eventPayload) => {
+                    const newInventory = (eventPayload && eventPayload.inventory) ? eventPayload.inventory : eventPayload;
+                    if (Array.isArray(newInventory) && newInventory.length > 0) {
+                        inventory = newInventory;
+                        applyDailySpecials();
+                        if (role === 'student') renderMenu();
+                        if (role === 'vendor') renderInventory();
+                    } else {
+                        apiFetch('/api/inventory').then(r=>safeParseJson(r)).then(cloudItems => {
+                            inventory = cloudItems;
+                            applyDailySpecials();
+                            if (role === 'student') renderMenu();
+                            if (role === 'vendor') renderInventory();
+                        }).catch(() => {});
+                    }
+                };
+
+                appSocket.on('inventory.updated', handleInventoryUpdated);
+                appSocket.on('inventory_updated', handleInventoryUpdated); // Legacy compatibility
+
+                // 4. Standardized Event: review.created
+                const handleReviewCreated = (eventPayload) => {
+                    const review = eventPayload.review || eventPayload;
+                    if (!review) return;
+                    allReviews.unshift(review);
+                    if (role === 'vendor') {
+                        renderVendorReviews();
+                    }
+                };
+
+                appSocket.on('review.created', handleReviewCreated);
+                appSocket.on('reviews_updated', handleReviewCreated); // Legacy compatibility
+
+                // 5. Standardized Event: shop.status_changed
+                const handleShopStatusChanged = (eventPayload) => {
+                    if (typeof eventPayload.shopOpen !== 'undefined') {
+                        shopOpen = eventPayload.shopOpen;
+                    }
+                    if (typeof eventPayload.breakEndTime !== 'undefined') {
+                        breakEndTime = eventPayload.breakEndTime;
+                    }
                     checkShopStatus();
-                });
+                };
+
+                appSocket.on('shop.status_changed', handleShopStatusChanged);
+                appSocket.on('shop_status_changed', handleShopStatusChanged); // Legacy compatibility
             }
         })
         .catch(() => {
@@ -611,7 +863,6 @@ function updateVendorOrderBadge(count) {
 }
 
 // ========================= UTILITIES =========================
-const $ = id => document.getElementById(id);
 const formatCurrency = amount => `₹${Number(amount).toFixed(2)}`;
 const generateOrderId = () => `ORD-${Date.now().toString(36).toUpperCase().slice(-5)}-${Math.floor(Math.random()*100)}`;
 const escapeHtml = str => str ? String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;') : '';
@@ -701,10 +952,132 @@ function triggerLiveNotification(title, body) {
                 });
                 n.onclick = () => window.focus();
             } catch (e) {}
-        } else if (Notification.permission !== 'denied') {
-            Notification.requestPermission();
         }
     }
+}
+
+// ========================= AUDIO TOKEN ANNOUNCER (VENDOR PANEL ONLY) =========================
+function speakTokenAnnouncer(textToSpeak) {
+    const enabled = localStorage.getItem('snacktime_audio_announcer_enabled') !== 'false';
+    if (!enabled) return;
+
+    if (!('speechSynthesis' in window)) {
+        console.warn('Speech synthesis not supported on this browser/device.');
+        return;
+    }
+
+    try {
+        window.speechSynthesis.cancel(); // Clear any ongoing speech queue
+
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        const volumeVal = parseFloat(localStorage.getItem('snacktime_audio_announcer_volume') || '1.0');
+        const voiceGender = localStorage.getItem('snacktime_audio_announcer_gender') || 'female';
+
+        utterance.volume = isNaN(volumeVal) ? 1.0 : Math.max(0, Math.min(1, volumeVal));
+        utterance.rate = 0.90;
+
+        const populateVoicesAndSpeak = () => {
+            const voices = window.speechSynthesis.getVoices() || [];
+            const englishVoices = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+
+            let selectedVoice = null;
+            if (voiceGender === 'male') {
+                selectedVoice = englishVoices.find(v => 
+                    /male|david|george|james|richard|rishi|google uk english male/i.test(v.name)
+                ) || englishVoices.find(v => !/female|zira|samantha|victoria|karen|catherine|hazel/i.test(v.name));
+                utterance.pitch = 0.8;
+            } else {
+                selectedVoice = englishVoices.find(v => 
+                    /female|zira|samantha|victoria|karen|catherine|hazel|heera|google us english/i.test(v.name)
+                ) || englishVoices[0];
+                utterance.pitch = 1.25;
+            }
+
+            if (selectedVoice) utterance.voice = selectedVoice;
+            window.speechSynthesis.speak(utterance);
+        };
+
+        if (window.speechSynthesis.getVoices().length === 0) {
+            window.speechSynthesis.onvoiceschanged = () => {
+                populateVoicesAndSpeak();
+                window.speechSynthesis.onvoiceschanged = null;
+            };
+        } else {
+            populateVoicesAndSpeak();
+        }
+    } catch (e) {
+        console.error('Audio Token Announcer Error:', e);
+    }
+}
+
+function formatItemsForSpeech(items) {
+    if (!items || !Array.isArray(items) || items.length === 0) return '';
+    const itemStrings = items.map(item => {
+        const qty = item.quantity || item.qty || 1;
+        const name = (item.name || '').replace(/[^\w\s]/gi, '').trim();
+        return `${qty} ${name}`;
+    }).filter(Boolean);
+    if (itemStrings.length === 0) return '';
+    if (itemStrings.length === 1) return itemStrings[0];
+    if (itemStrings.length === 2) return `${itemStrings[0]} and ${itemStrings[1]}`;
+    return itemStrings.slice(0, -1).join(', ') + ', and ' + itemStrings[itemStrings.length - 1];
+}
+
+function announceOrderStatus(order, status) {
+    if (!currentUser || currentUser.role !== 'vendor') return;
+    if (!order) return;
+
+    const tokenNum = order.token ? String(order.token).padStart(3, '0') : '';
+    let tokenPhrase = '';
+    if (tokenNum) {
+        const digitsSpaced = tokenNum.split('').join(' ');
+        tokenPhrase = `Token ${digitsSpaced}`;
+    } else if (order.id) {
+        tokenPhrase = `Order ${order.id}`;
+    } else {
+        tokenPhrase = 'Order';
+    }
+
+    const itemsPhrase = formatItemsForSpeech(order.items);
+    const itemsPart = itemsPhrase ? `, ${itemsPhrase}` : '';
+
+    let speechText = '';
+    const statusLower = (status || order.status || 'pending').toLowerCase();
+
+    if (statusLower === 'pending') {
+        speechText = `${tokenPhrase}${itemsPart}. Order is pending.`;
+    } else if (statusLower === 'preparing') {
+        speechText = `${tokenPhrase}${itemsPart}. Order is preparing.`;
+    } else if (statusLower === 'ready') {
+        speechText = `${tokenPhrase}${itemsPart}. Order is ready for pickup!`;
+    } else {
+        return;
+    }
+
+    speakTokenAnnouncer(speechText);
+}
+
+function announceOrderReady(order) {
+    announceOrderStatus(order, 'ready');
+}
+
+function testTokenAnnouncer() {
+    const gender = $('announcer-gender-select') ? $('announcer-gender-select').value : (localStorage.getItem('snacktime_audio_announcer_gender') || 'female');
+    const genderLabel = gender === 'male' ? 'Male' : 'Female';
+    speakTokenAnnouncer(`Token 1 0 5, 2 Samosa, 1 Tea. Order is ready for pickup! Testing ${genderLabel} voice.`);
+}
+
+function saveAnnouncerSettings() {
+    const enabled = $('announcer-enable-toggle') ? $('announcer-enable-toggle').checked : true;
+    const gender = $('announcer-gender-select') ? $('announcer-gender-select').value : 'female';
+    const volume = $('announcer-volume-slider') ? $('announcer-volume-slider').value : '1.0';
+
+    localStorage.setItem('snacktime_audio_announcer_enabled', enabled ? 'true' : 'false');
+    localStorage.setItem('snacktime_audio_announcer_gender', gender);
+    localStorage.setItem('snacktime_audio_announcer_volume', volume);
+
+    const volLabel = $('announcer-volume-label');
+    if (volLabel) volLabel.innerText = Math.round(parseFloat(volume) * 100) + '%';
 }
 
 // ========================= NAVIGATION =========================
@@ -750,6 +1123,7 @@ function switchVendorTab(view) {
 
     if (view === 'orders' || view === 'dashboard') { renderVendorOrders(); updateVendorOrderBadge(0); }
     if (view === 'inventory') renderInventory();
+    if (view === 'history') renderVendorOrderHistory();
     if (view === 'analytics') renderAnalyticsChart();
     if (view === 'feedback') renderVendorReviews();
     if (view === 'settings') renderVendorSettings();
@@ -759,28 +1133,68 @@ function switchVendorTab(view) {
 }
 
 function renderVendorKPIs() {
-    const today = new Date().toDateString();
-    const todayOrders = allOrders.filter(o => new Date(o.timestamp?.toDate ? o.timestamp.toDate() : o.timestamp).toDateString() === today);
-    const todayRevenue = todayOrders.filter(o => o.status !== 'cancelled' && o.status !== 'expired').reduce((sum, o) => sum + (o.total || 0), 0);
-    const pendingCount = allOrders.filter(o => o.status === 'pending' || o.status === 'preparing').length;
+    const todayStr = new Date().toDateString();
+
+    // 1. Filter Today's Orders accurately (handles placedAt, created_at, timestamp, date)
+    const todayOrders = allOrders.filter(o => {
+        if (!o) return false;
+        let d = null;
+        if (o.placedAt) d = new Date(o.placedAt);
+        else if (o.created_at) d = new Date(o.created_at);
+        else if (o.timestamp?.toDate) d = o.timestamp.toDate();
+        else if (o.timestamp) d = new Date(o.timestamp);
+        if (d && !isNaN(d.getTime())) {
+            return d.toDateString() === todayStr;
+        }
+        return true; // Fallback: active session orders counted for today
+    });
+
+    // 2. Today's Revenue (sum of all valid, non-cancelled/non-expired orders)
+    const todayRevenue = todayOrders
+        .filter(o => o.status !== 'cancelled' && o.status !== 'expired')
+        .reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+
+    // 3. Pending & Preparing Orders Count
+    const pendingOrdersList = allOrders.filter(o => o.status === 'pending' || o.status === 'preparing');
+    const pendingCount = pendingOrdersList.length;
+
+    // 4. Pending Preparation Time (dynamically calculated from items in kitchen queue)
+    let totalPrepMinutes = 0;
+    if (pendingCount > 0) {
+        const totalItemsInQueue = pendingOrdersList.reduce((sum, o) => {
+            if (Array.isArray(o.items) && o.items.length > 0) {
+                return sum + o.items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
+            }
+            return sum + 1;
+        }, 0);
+        // Dynamic prep queue estimate: ~2.5 min per item + 1.5 min handling per order
+        totalPrepMinutes = Math.max(3, Math.min(60, Math.round(totalItemsInQueue * 2.5 + pendingCount * 1.5)));
+    }
+
+    const prepTimeText = pendingCount === 0 ? '0 min' : `${totalPrepMinutes} min`;
+    const prepTimeChipText = pendingCount === 0 ? '0m' : `${totalPrepMinutes}m`;
 
     // Desktop KPI Cards
     const todayOrdersEl = $('kpi-today-orders');
     const todayRevenueEl = $('kpi-today-revenue');
     const pendingEl = $('kpi-pending-orders');
+    const avgPrepEl = $('kpi-avg-prep');
 
     if (todayOrdersEl) todayOrdersEl.innerText = todayOrders.length;
     if (todayRevenueEl) todayRevenueEl.innerText = formatCurrency(todayRevenue);
     if (pendingEl) pendingEl.innerText = pendingCount;
+    if (avgPrepEl) avgPrepEl.innerText = prepTimeText;
 
     // Mobile Scrollable KPI Chips
     const chipOrdersEl = $('chip-today-orders');
     const chipRevenueEl = $('chip-today-revenue');
     const chipPendingEl = $('chip-pending-orders');
+    const chipAvgPrepEl = $('chip-avg-prep');
 
     if (chipOrdersEl) chipOrdersEl.innerText = todayOrders.length;
     if (chipRevenueEl) chipRevenueEl.innerText = formatCurrency(todayRevenue);
     if (chipPendingEl) chipPendingEl.innerText = pendingCount;
+    if (chipAvgPrepEl) chipAvgPrepEl.innerText = prepTimeChipText;
 
     // Current Date Display
     const dateEl = $('vendor-current-date');
@@ -822,117 +1236,194 @@ function filterStudentMenu(query) {
 
 // ========================= AUTH =========================
 function toggleAuthMode() {
-    const mode = document.querySelector('input[name="auth-mode"]:checked').value;
-    const role = document.querySelector('.auth-tabs').getAttribute('data-role') || 'student';
-    $('auth-title').innerText = mode === 'register' ? 'Create an Account' : 'Login to Order';
-    $('auth-submit-btn').innerText = mode === 'register' ? 'Register' : 'Login';
-    $('login-error').style.display = 'none';
+    const modeEl = document.querySelector('input[name="auth-mode"]:checked');
+    const mode = modeEl ? modeEl.value : 'login';
+    const tabsEl = document.querySelector('.auth-tabs');
+    const role = tabsEl ? (tabsEl.getAttribute('data-role') || 'student') : 'student';
+
+    const titleEl = $('auth-title');
+    if (titleEl) {
+        if (mode === 'register') {
+            titleEl.innerText = role === 'vendor' ? 'Create Vendor Account' : 'Create Student Account';
+        } else {
+            titleEl.innerText = role === 'vendor' ? 'Vendor Portal Login' : 'Login to Order';
+        }
+    }
+
+    const btnEl = $('auth-submit-btn');
+    if (btnEl) btnEl.innerText = mode === 'register' ? 'Register' : 'Login';
+
+    const forgotLink = $('forgot-link');
+    if (forgotLink && forgotLink.parentElement) {
+        forgotLink.parentElement.style.display = mode === 'register' ? 'none' : 'block';
+    }
+
+    const errorEl = $('login-error');
+    if (errorEl) {
+        errorEl.style.display = 'none';
+        errorEl.innerText = '';
+    }
+
     const emailField = $('email');
-    if (mode === 'register' && role === 'student') {
-        emailField.style.display = 'block';
-    } else {
-        emailField.style.display = 'none';
-        emailField.value = '';
+    if (emailField) {
+        if (mode === 'register') {
+            emailField.style.display = 'block';
+            emailField.placeholder = role === 'vendor' ? 'Vendor Email (e.g. vendor@sece.ac.in)' : 'College Email (@sece.ac.in)';
+        } else {
+            emailField.style.display = 'none';
+            emailField.value = '';
+        }
     }
 }
 
 function switchAuthTab(role) {
-    document.querySelectorAll('.auth-tabs .tab-btn').forEach(btn => btn.classList.remove('active'));
-    event.target.classList.add('active');
-    event.target.parentElement.setAttribute('data-role', role);
+    const tabsContainer = document.querySelector('.auth-tabs');
+    if (tabsContainer) tabsContainer.setAttribute('data-role', role);
+
+    document.querySelectorAll('.auth-tabs .tab-btn').forEach((btn, idx) => {
+        const text = (btn.innerText || '').toLowerCase();
+        const isVendorBtn = text.includes('vendor') || idx === 1;
+        if ((role === 'vendor' && isVendorBtn) || (role === 'student' && !isVendorBtn)) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
+    const usernameInput = $('username');
+    if (usernameInput) {
+        usernameInput.placeholder = role === 'vendor' ? 'Vendor Username (e.g. vendor)' : 'Username (e.g. harriz07)';
+    }
+
     toggleAuthMode();
 }
 
 function handleAuth() {
-    const mode = document.querySelector('input[name="auth-mode"]:checked').value;
+    const modeEl = document.querySelector('input[name="auth-mode"]:checked');
+    const mode = modeEl ? modeEl.value : 'login';
     if (mode === 'register') register();
     else login();
 }
 
 function register() {
-    // FIX 6: Rate Limiting — Max 3 register attempts per 60s per device
     const now = Date.now();
     registerAttempts = registerAttempts.filter(t => now - t < 60000);
     const errorMsg = $('login-error');
-    errorMsg.style.display = 'none';
+    if (errorMsg) { errorMsg.style.display = 'none'; errorMsg.innerText = ''; }
 
-    if (registerAttempts.length >= 3) {
-        errorMsg.innerText = "Too many registration attempts. Please wait 1 minute.";
-        errorMsg.style.display = 'block';
+    if (registerAttempts.length >= 5) {
+        if (errorMsg) {
+            errorMsg.innerText = "Too many registration attempts. Please wait 1 minute.";
+            errorMsg.style.display = 'block';
+        }
         return;
     }
     registerAttempts.push(now);
 
-    const role = document.querySelector('.auth-tabs').getAttribute('data-role') || 'student';
-    const emailInput = $('email').value.trim().toLowerCase();
-    const usernameInput = $('username').value.trim();
-    const passwordInput = $('password').value;
+    const tabsEl = document.querySelector('.auth-tabs');
+    const role = tabsEl ? (tabsEl.getAttribute('data-role') || 'student') : 'student';
+    const emailInput = $('email') ? $('email').value.trim().toLowerCase() : '';
+    const usernameInput = $('username') ? $('username').value.trim() : '';
+    const passwordInput = $('password') ? $('password').value : '';
 
-    if (role === 'student') {
-        if (!emailInput || !usernameInput || !passwordInput) {
-            errorMsg.innerText = "Please fill in all fields.";
-            errorMsg.style.display = 'block';
-            return;
-        }
-        if (!emailInput.endsWith('@sece.ac.in')) {
-            errorMsg.innerText = "Please use your college email (@sece.ac.in).";
-            errorMsg.style.display = 'block';
-            return;
-        }
-    } else {
-        if (!usernameInput || !passwordInput) {
-            errorMsg.innerText = "Please fill in all fields.";
-            errorMsg.style.display = 'block';
-            return;
-        }
+    if (!emailInput || !usernameInput || !passwordInput) {
+        if (errorMsg) { errorMsg.innerText = "Please fill in all fields (Email, Username, Password)."; errorMsg.style.display = 'block'; }
+        return;
     }
 
-    const targetEmail = role === 'student' ? emailInput : `${usernameInput.toLowerCase()}@vendor.snacktime.com`;
-    $('auth-submit-btn').innerText = 'Registering...';
-    $('auth-submit-btn').disabled = true;
+    if (role === 'student' && !emailInput.endsWith('@sece.ac.in')) {
+        if (errorMsg) { errorMsg.innerText = "Please use your college email (@sece.ac.in)."; errorMsg.style.display = 'block'; }
+        return;
+    }
 
-    // Try Express backend first to register and store hashed password in MySQL
+    if (role === 'vendor' && !emailInput.includes('@')) {
+        if (errorMsg) { errorMsg.innerText = "Please enter a valid email address."; errorMsg.style.display = 'block'; }
+        return;
+    }
+
+    if (usernameInput.length < 3) {
+        if (errorMsg) { errorMsg.innerText = "Username must be at least 3 characters long."; errorMsg.style.display = 'block'; }
+        return;
+    }
+
+    if (passwordInput.length < 4) {
+        if (errorMsg) { errorMsg.innerText = "Password must be at least 4 characters long."; errorMsg.style.display = 'block'; }
+        return;
+    }
+
+    const targetEmail = emailInput;
+    const btn = $('auth-submit-btn');
+    if (btn) { btn.innerText = 'Registering...'; btn.disabled = true; }
+
     apiFetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: usernameInput, email: targetEmail, password: passwordInput, role })
     })
     .then(async res => {
-        const data = await safeParseJson(res);
-        showNotification("✅ Account created! Logging in...", "success");
-        loginWithCredentials(usernameInput, passwordInput, role);
+        const contentType = res.headers ? (res.headers.get('content-type') || '') : '';
+        if (res.ok && contentType.includes('application/json')) {
+            let data = {};
+            try { data = await res.json(); } catch (e) {}
+            
+            // Cache user locally as well for offline/PWA capability
+            let localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
+            if (!localUsers.find(u => u.username.toLowerCase() === usernameInput.toLowerCase())) {
+                localUsers.push({ username: usernameInput, email: targetEmail, password: passwordInput, role });
+                localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
+            }
+
+            if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
+            showNotification("✅ Account created! Logging in...", "success");
+            executeLogin(usernameInput, role, targetEmail, data.id || null);
+            return;
+        }
+
+        if (!res.ok && contentType.includes('application/json')) {
+            try {
+                const errData = await res.json();
+                if (errData && errData.message) {
+                    if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
+                    if (errorMsg) {
+                        errorMsg.innerText = errData.message;
+                        errorMsg.style.display = 'block';
+                    }
+                    return;
+                }
+            } catch (e) {}
+        }
+
+        // If non-JSON or static hosting 404, fallback to offline local store
+        throw new Error('API_FALLBACK');
     })
     .catch(err => {
-        // Fallback for static hosting / offline mode
+        if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
+
+        // Offline / Static Hosting fallback
         let localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
         const existing = localUsers.find(u => u.username.toLowerCase() === usernameInput.toLowerCase());
         if (existing) {
-            $('auth-submit-btn').innerText = 'Register';
-            $('auth-submit-btn').disabled = false;
-            errorMsg.innerText = 'Username is already registered.';
-            errorMsg.style.display = 'block';
+            if (errorMsg) { errorMsg.innerText = 'Username is already registered.'; errorMsg.style.display = 'block'; }
             return;
         }
         localUsers.push({ username: usernameInput, email: targetEmail, password: passwordInput, role });
         localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
 
-        $('auth-submit-btn').innerText = 'Register';
-        $('auth-submit-btn').disabled = false;
         showNotification("✅ Account created successfully!", "success");
         executeLogin(usernameInput, role, targetEmail);
     });
 }
 
 function login() {
-    const role = document.querySelector('.auth-tabs').getAttribute('data-role') || 'student';
-    const usernameInput = $('username').value.trim();
-    const passwordInput = $('password').value;
+    const tabsEl = document.querySelector('.auth-tabs');
+    const role = tabsEl ? (tabsEl.getAttribute('data-role') || 'student') : 'student';
+    const usernameInput = $('username') ? $('username').value.trim() : '';
+    const passwordInput = $('password') ? $('password').value : '';
     const errorMsg = $('login-error');
-    errorMsg.style.display = 'none';
+    if (errorMsg) { errorMsg.style.display = 'none'; errorMsg.innerText = ''; }
 
     if (!usernameInput || !passwordInput) {
-        errorMsg.innerText = "Please fill in all fields.";
-        errorMsg.style.display = 'block';
+        if (errorMsg) { errorMsg.innerText = "Please enter both Username and Password."; errorMsg.style.display = 'block'; }
         return;
     }
 
@@ -941,10 +1432,12 @@ function login() {
 
 function loginWithCredentials(usernameInput, passwordInput, role) {
     const errorMsg = $('login-error');
-    $('auth-submit-btn').innerText = 'Logging in...';
-    $('auth-submit-btn').disabled = true;
+    if (errorMsg) { errorMsg.style.display = 'none'; errorMsg.innerText = ''; }
 
-    const lowerUser = usernameInput.toLowerCase();
+    const btn = $('auth-submit-btn');
+    if (btn) { btn.innerText = 'Logging in...'; btn.disabled = true; }
+
+    const lowerUser = (usernameInput || '').toLowerCase();
 
     // 1. Try Express MySQL /api/login backend
     apiFetch('/api/login', {
@@ -953,13 +1446,45 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         body: JSON.stringify({ username: usernameInput, password: passwordInput, role })
     })
     .then(async res => {
-        const data = await safeParseJson(res);
-        $('auth-submit-btn').innerText = 'Login';
-        $('auth-submit-btn').disabled = false;
-        executeLogin(data.username, data.role, data.email);
+        const contentType = res.headers ? (res.headers.get('content-type') || '') : '';
+        if (res.ok && contentType.includes('application/json')) {
+            const data = await res.json();
+            
+            // Cache credentials locally for offline PWA sync
+            let localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
+            const idx = localUsers.findIndex(u => u.username.toLowerCase() === lowerUser);
+            if (idx >= 0) {
+                localUsers[idx] = { username: usernameInput, email: data.email || '', password: passwordInput, role };
+            } else {
+                localUsers.push({ username: usernameInput, email: data.email || '', password: passwordInput, role });
+            }
+            localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
+
+            if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+            executeLogin(data.username || usernameInput, data.role || role, data.email || '', data.id || null);
+            return;
+        }
+
+        if (!res.ok && contentType.includes('application/json')) {
+            try {
+                const errData = await res.json();
+                if (errData && errData.message) {
+                    if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+                    if (errorMsg) {
+                        errorMsg.innerText = errData.message;
+                        errorMsg.style.display = 'block';
+                    }
+                    return;
+                }
+            } catch (e) {}
+        }
+
+        // If non-JSON or static hosting 404, fallback to local accounts
+        throw new Error('API_FALLBACK');
     })
     .catch(err => {
-        // 2. Fallback check for static deployment / offline execution
+        if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+
         let authenticated = false;
         let userEmail = '';
 
@@ -973,11 +1498,26 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         } else {
             // Local Registered Users Fallback
             const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
-            const found = localUsers.find(u => u.username.toLowerCase() === lowerUser && u.password === passwordInput && u.role === role);
+            const found = localUsers.find(u => u.username.toLowerCase() === lowerUser);
             if (found) {
-                authenticated = true;
-                userEmail = found.email;
-            } else if (usernameInput && passwordInput && passwordInput.length >= 3) {
+                if (found.role !== role) {
+                    if (errorMsg) {
+                        errorMsg.innerText = `This account is registered as a ${found.role}. Please switch to the ${found.role === 'vendor' ? 'Vendor' : 'Student/Staff'} tab.`;
+                        errorMsg.style.display = 'block';
+                    }
+                    return;
+                }
+                if (found.password === passwordInput) {
+                    authenticated = true;
+                    userEmail = found.email;
+                } else {
+                    if (errorMsg) {
+                        errorMsg.innerText = 'Invalid password. Please try again.';
+                        errorMsg.style.display = 'block';
+                    }
+                    return;
+                }
+            } else if (usernameInput && passwordInput) {
                 // Auto-provision student/vendor session for smooth local/demo login
                 authenticated = true;
                 userEmail = role === 'student' ? `${lowerUser.replace(/\s+/g, '')}@sece.ac.in` : `${lowerUser.replace(/\s+/g, '')}@vendor.snacktime.com`;
@@ -986,26 +1526,23 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             }
         }
 
-        $('auth-submit-btn').innerText = 'Login';
-        $('auth-submit-btn').disabled = false;
-
         if (authenticated) {
             executeLogin(usernameInput, role, userEmail);
         } else {
-            const cleanMsg = (err.message && !err.message.includes('<!doctype') && !err.message.includes('Unexpected token') && err.message !== 'API_UNAVAILABLE')
-                ? err.message
-                : 'Invalid username or password. Please try again.';
-            errorMsg.innerText = cleanMsg;
-            errorMsg.style.display = 'block';
+            if (errorMsg) {
+                errorMsg.innerText = 'Invalid username or password. Please try again.';
+                errorMsg.style.display = 'block';
+            }
         }
     });
 }
 
-function executeLogin(username, role, email = '') {
-    currentUser = { username, role, email };
+function executeLogin(username, role, email = '', id = null) {
+    currentUser = { username, role, email, id };
     localStorage.setItem('snacktime_session', JSON.stringify(currentUser));
     initNativeNotifications();
     registerFcmToken(username);
+    initUniversalWebRTCEngine();
 
     const headerEl = $('header-username');
     if (headerEl) headerEl.textContent = username;
@@ -1014,12 +1551,14 @@ function executeLogin(username, role, email = '') {
 
     if (role === 'vendor') {
         switchScreen('vendor-screen');
+        switchVendorTab('orders');
         startDatabaseSync('vendor');
         checkShopStatus();
         renderVendorOrders();
         showNotification("✅ Vendor Dashboard Loaded", 'success');
     } else {
         switchScreen('customer-screen');
+        switchCustomerTab('menu');
         startDatabaseSync('student');
         renderMenu();
         checkShopStatus();
@@ -1033,6 +1572,9 @@ function executeLogin(username, role, email = '') {
     if (usernameField) usernameField.value = '';
     if (passwordField) passwordField.value = '';
     if (emailField) emailField.value = '';
+
+    const errorMsg = $('login-error');
+    if (errorMsg) { errorMsg.style.display = 'none'; errorMsg.innerText = ''; }
 }
 
 function logout() {
@@ -1211,6 +1753,41 @@ function renderVendorSettings() {
                     ✅ <strong>Stock conflicts</strong>: Verified atomically at checkout using MySQL Transactions.
                 </p>
             </div>
+            <div>
+                <h4 style="margin-bottom:0.5rem;">🗣️ Audio Token Voice Announcer</h4>
+                <p style="margin-bottom:1rem; font-size:0.9rem; color:var(--text-secondary);">Automatically announce ready token numbers over your device speaker when orders are marked ready for pickup.</p>
+                
+                <div style="display:flex; flex-direction:column; gap:1rem; max-width:440px; background:var(--element-bg); padding:1.25rem; border-radius:12px; border:1px solid var(--surface-border);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:600; font-size:0.9rem;">Voice Announcement:</span>
+                        <label style="display:inline-flex; align-items:center; cursor:pointer;">
+                            <input type="checkbox" id="announcer-enable-toggle" onchange="saveAnnouncerSettings()" ${localStorage.getItem('snacktime_audio_announcer_enabled') !== 'false' ? 'checked' : ''} style="width:20px; height:20px; accent-color:var(--primary); cursor:pointer;">
+                            <span style="margin-left:8px; font-weight:600; font-size:0.9rem;">Enabled</span>
+                        </label>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:600; font-size:0.9rem;">Voice Gender:</span>
+                        <select id="announcer-gender-select" onchange="saveAnnouncerSettings()" style="padding:0.4rem 0.8rem; border-radius:6px; border:1px solid var(--surface-border); background:var(--bg-primary); color:var(--text-primary); font-family:inherit;">
+                            <option value="female" ${localStorage.getItem('snacktime_audio_announcer_gender') !== 'male' ? 'selected' : ''}>👩 Female Voice</option>
+                            <option value="male" ${localStorage.getItem('snacktime_audio_announcer_gender') === 'male' ? 'selected' : ''}>👨 Male Voice</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                            <span style="font-weight:600; font-size:0.9rem;">Speaker Volume:</span>
+                            <span id="announcer-volume-label" style="font-weight:700; font-size:0.85rem; color:var(--primary);">${Math.round(parseFloat(localStorage.getItem('snacktime_audio_announcer_volume') || '1.0') * 100)}%</span>
+                        </div>
+                        <input type="range" id="announcer-volume-slider" min="0" max="1" step="0.05" value="${localStorage.getItem('snacktime_audio_announcer_volume') || '1.0'}" oninput="saveAnnouncerSettings()" style="width:100%; cursor:pointer; accent-color:var(--primary);">
+                    </div>
+
+                    <div style="margin-top:0.25rem;">
+                        <button class="primary-btn full-width" style="font-size:0.85rem; min-height:38px;" onclick="testTokenAnnouncer()">
+                            🧪 Test Voice Announcement
+                        </button>
+                    </div>
+                </div>
             </div>
             <div>
                 <h4 style="margin-bottom:0.5rem;"><i data-lucide="globe" style="vertical-align:middle; width:16px;"></i> ${t('vendor_language_settings_title')}</h4>
@@ -1335,7 +1912,12 @@ function updateOrderStatus(orderId, newStatus, cancelReason) {
         if (autoExpireTimers[orderId]) { clearTimeout(autoExpireTimers[orderId]); delete autoExpireTimers[orderId]; }
     }
 
-    if (newStatus === 'ready') startPickupTimer(orderId);
+    if (newStatus === 'ready') {
+        startPickupTimer(orderId);
+    }
+    if (newStatus === 'pending' || newStatus === 'preparing' || newStatus === 'ready') {
+        announceOrderStatus(orderInAll || orderInLive || { id: orderId }, newStatus);
+    }
 
     try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
     broadcastRealtimeEvent('ORDER_STATUS_CHANGED', orderInAll || { id: orderId, status: newStatus, cancelReason });
@@ -1828,7 +2410,6 @@ function generateBillReceipt(orderObj, method, paymentId, tokenNumber) {
 
     // ── 2. Switch internal steps: hide method-select & counter-confirm, show bill ──
     const payTitleEl = $('payment-title');
-    if (payTitleEl) payTitleEl.innerText = '🎉 Payment Successful!';
 
     const methodSelEl = $('payment-method-selection');
     if (methodSelEl) methodSelEl.style.display = 'none';
@@ -1842,12 +2423,6 @@ function generateBillReceipt(orderObj, method, paymentId, tokenNumber) {
     const viewStatusBtn = $('view-status-btn');
     if (viewStatusBtn) viewStatusBtn.style.display = 'block';
 
-    // ── 3. Populate Token Number ──
-    const tokenEl = $('token-number');
-    if (tokenEl) {
-        tokenEl.innerText = tokenNumber ? String(tokenNumber).padStart(3, '0') : (order.token ? String(order.token).padStart(3, '0') : '???');
-    }
-
     const itemsHtml = (order.items || []).map(i =>
         `<span style="display:flex;justify-content:space-between;padding:2px 0;">
             <span>${i.qty}× ${i.name}</span>
@@ -1856,7 +2431,38 @@ function generateBillReceipt(orderObj, method, paymentId, tokenNumber) {
     ).join('');
 
     const receiptEl = $('receipt-details');
-    if (receiptEl) {
+    if (!receiptEl) return;
+
+    // ── 3. Populate Token Number (shown for all order types) ──
+    const tokenEl = $('token-number');
+    if (tokenEl) {
+        tokenEl.innerText = tokenNumber ? String(tokenNumber).padStart(3, '0') : (order.token ? String(order.token).padStart(3, '0') : '???');
+    }
+
+    const isCounter = (method || '').toLowerCase() === 'counter' || (method || '').toLowerCase() === 'pay at counter';
+
+    if (isCounter) {
+        // ── Counter: Token Slip Only — no bill generated; student pays and collects bill at counter ──
+        if (payTitleEl) payTitleEl.innerText = '✅ Order Placed!';
+        receiptEl.innerHTML = `
+            <div style="font-family:monospace;font-size:0.82rem;background:var(--element-bg);border-radius:12px;padding:1rem;text-align:left;border:1px solid var(--surface-border);">
+                <div style="text-align:center;font-weight:700;font-size:0.9rem;margin-bottom:4px;">SNACK TIME Campus Café</div>
+                <div style="text-align:center;color:var(--text-secondary);margin-bottom:12px;font-size:0.72rem;">Sri Eshwar College of Engineering</div>
+                <div style="border-top:1px dashed var(--surface-border);margin-bottom:8px;"></div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>Date</span><span>${new Date().toLocaleDateString()}</span></div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>Time</span><span>${order.time || new Date().toLocaleTimeString()}</span></div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>Order ID</span><span style="font-weight:600;">${order.id}</span></div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>Customer</span><span>${order.customer}</span></div>
+                <div style="border-top:1px dashed var(--surface-border);margin:8px 0;"></div>
+                ${itemsHtml}
+                <div style="border-top:1px dashed var(--surface-border);margin:8px 0;"></div>
+                <div style="margin-top:10px;background:var(--warning-bg,#fef3c7);border:1.5px dashed var(--warning,#f59e0b);border-radius:8px;padding:10px;text-align:center;color:var(--warning,#92400e);font-size:0.82rem;font-weight:600;">
+                    🏪 Collect your bill and food at the counter
+                </div>
+            </div>`;
+    } else {
+        // ── Online Payment: Full Bill Receipt ──
+        if (payTitleEl) payTitleEl.innerText = '🎉 Payment Successful!';
         receiptEl.innerHTML = `
             <div style="font-family:monospace;font-size:0.82rem;background:var(--element-bg);border-radius:12px;padding:1rem;text-align:left;border:1px solid var(--surface-border);">
                 <div style="text-align:center;font-weight:700;font-size:0.9rem;margin-bottom:4px;">SNACK TIME Campus Café</div>
@@ -1873,7 +2479,6 @@ function generateBillReceipt(orderObj, method, paymentId, tokenNumber) {
                 <div style="border-top:1px dashed var(--surface-border);margin:8px 0;"></div>
                 <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--primary);font-size:0.9rem;"><span>Total Paid</span><span>${formatCurrency(order.total)}</span></div>
                 <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>Method</span><span>${method}</span></div>
-                ${method === 'Counter' ? '<p style="margin-top:8px;color:var(--text-secondary);font-size:0.72rem;">⚠️ Please pay at the counter when collecting your order.</p>' : ''}
             </div>`;
     }
 }
@@ -2158,6 +2763,7 @@ function renderVendorOrders() {
         const emptyTxt = d.vendor_no_orders || 'All caught up! No orders to show right now.';
         container.innerHTML = `<div class="empty-state"><i data-lucide="clipboard-check" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>${emptyTxt}</p></div>`;
         lucide.createIcons();
+        renderVendorKPIs();
         return;
     }
 
@@ -2206,6 +2812,7 @@ function renderVendorOrders() {
         }).join('');
 
         const isActionable = rawStatus === 'pending' || rawStatus === 'preparing';
+        const isCounterOrder = rawMethod === 'counter' || rawMethod === 'pay at counter';
 
         return `
         <div class="swipeable-card-wrapper">
@@ -2234,6 +2841,7 @@ function renderVendorOrders() {
                 ${isActionable ? `
                 <div class="order-actions" style="margin-top:4px;">
                     <button class="outline-btn btn-cancel" onclick="vendorCancelOrder('${order.id}')">${cancelTxt}</button>
+                    ${isCounterOrder ? `<button class="outline-btn" style="border-color:var(--info,#0ea5e9);color:var(--info,#0ea5e9);min-height:44px;" onclick="vendorPrintBill('${order.id}')">🖨️ Print Bill</button>` : ''}
                     <button class="primary-btn ${rawStatus === 'preparing' ? 'btn-ready' : ''}" style="min-height:44px;" onclick="updateOrderStatus('${order.id}', '${rawStatus === 'pending' ? 'preparing' : 'ready'}')">
                         ${rawStatus === 'pending' ? acceptTxt : readyTxt}
                     </button>
@@ -2246,6 +2854,247 @@ function renderVendorOrders() {
     lucide.createIcons();
     attachSwipeGesturesToCards();
 }
+
+// ========================= VENDOR PRINT BILL (Counter Orders Only) =========================
+function vendorPrintBill(orderId) {
+    const order = allOrders.find(o => String(o.id) === String(orderId)) || liveOrders.find(o => String(o.id) === String(orderId));
+    if (!order) { showNotification('Order not found.', 'error'); return; }
+
+    const itemsRows = (order.items || []).map(i => `
+        <tr>
+            <td style="padding:4px 8px;">${i.qty}x ${i.name || ''}</td>
+            <td style="padding:4px 8px;text-align:right;">&#8377;${((i.price || 0) * (i.qty || 1)).toFixed(2)}</td>
+        </tr>`).join('');
+
+    const placedDate = order.placedAt ? new Date(order.placedAt) : new Date();
+    const dateStr = placedDate.toLocaleDateString();
+    const timeStr = order.time || placedDate.toLocaleTimeString();
+    const tokenStr = order.token ? String(order.token).padStart(3, '0') : '---';
+
+    const billHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Bill - ${order.id}</title>
+<style>
+  body { font-family: monospace; font-size: 13px; max-width: 320px; margin: 0 auto; padding: 16px; }
+  h2 { text-align: center; margin: 0; font-size: 16px; }
+  .sub { text-align: center; color: #666; font-size: 11px; margin-bottom: 12px; }
+  .divider { border-top: 1px dashed #aaa; margin: 8px 0; }
+  .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  .total-row td { font-weight: bold; font-size: 14px; border-top: 1px dashed #aaa; padding-top: 6px; }
+  .footer { text-align: center; margin-top: 14px; font-size: 11px; color: #555; }
+  .token-box { text-align: center; border: 2px dashed #333; border-radius: 8px; padding: 8px; margin: 10px 0; }
+  .token-num { font-size: 32px; font-weight: bold; letter-spacing: 6px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h2>SNACK TIME Campus Café</h2>
+  <div class="sub">Sri Eshwar College of Engineering</div>
+  <div class="divider"></div>
+  <div class="row"><span>Date</span><span>${dateStr}</span></div>
+  <div class="row"><span>Time</span><span>${timeStr}</span></div>
+  <div class="row"><span>Order ID</span><span><b>${order.id}</b></span></div>
+  <div class="row"><span>Customer</span><span>${order.customer || '—'}</span></div>
+  <div class="row"><span>Method</span><span>Pay at Counter</span></div>
+  <div class="token-box">
+    <div style="font-size:11px;color:#666;margin-bottom:2px;">TOKEN NUMBER</div>
+    <div class="token-num">${tokenStr}</div>
+  </div>
+  <div class="divider"></div>
+  <table>
+    <tbody>${itemsRows}</tbody>
+    <tfoot>
+      <tr class="total-row">
+        <td style="padding:4px 8px;padding-top:6px;">TOTAL</td>
+        <td style="padding:4px 8px;padding-top:6px;text-align:right;">&#8377;${(order.total || 0).toFixed(2)}</td>
+      </tr>
+    </tfoot>
+  </table>
+  <div class="divider"></div>
+  <div class="footer">Thank you! Please pay at the counter.<br>Snack Time &mdash; SECE Campus</div>
+</body>
+</html>`;
+
+    const printWin = window.open('', '_blank', 'width=380,height=600');
+    if (!printWin) { showNotification('Please allow popups to print the bill.', 'error'); return; }
+    printWin.document.write(billHtml);
+    printWin.document.close();
+    printWin.focus();
+}
+
+// ========================= VENDOR ORDER HISTORY =========================
+function renderVendorOrderHistory() {
+    const container = $('vendor-history-container');
+    if (!container) return;
+
+    const searchInput = $('history-search');
+    const statusSelect = $('history-status-filter');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const statusFilter = statusSelect ? statusSelect.value.toLowerCase() : 'all';
+
+    // 1. Ensure allOrders is fallback loaded from localStorage if empty
+    let ordersList = [...allOrders];
+    if (ordersList.length === 0) {
+        try {
+            ordersList = JSON.parse(localStorage.getItem('snacktime_orders')) || [];
+        } catch (e) { ordersList = []; }
+    }
+
+    // 2. Filter by status and search query
+    let filtered = ordersList.filter(o => {
+        if (!o) return false;
+        const st = (o.status || '').toLowerCase();
+        if (statusFilter !== 'all' && st !== statusFilter) return false;
+
+        if (query) {
+            const customerStr = (o.customer || '').toLowerCase();
+            const idStr = String(o.id || '').toLowerCase();
+            const tokenStr = String(o.token || '').toLowerCase();
+            const itemsStr = Array.isArray(o.items) ? o.items.map(i => i.name).join(' ').toLowerCase() : '';
+            return customerStr.includes(query) || idStr.includes(query) || tokenStr.includes(query) || itemsStr.includes(query);
+        }
+        return true;
+    });
+
+    if (filtered.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state" style="padding:2.5rem 1rem;text-align:center;color:var(--text-secondary);">
+                <i data-lucide="history" style="width:48px;height:48px;margin-bottom:0.5rem;opacity:0.5;"></i>
+                <p>No historical orders found matching your search.</p>
+            </div>`;
+        lucide.createIcons();
+        return;
+    }
+
+    // 3. Sort orders by placedAt / date descending (latest first)
+    filtered.sort((a, b) => {
+        const timeA = a.placedAt || (a.created_at ? new Date(a.created_at).getTime() : 0);
+        const timeB = b.placedAt || (b.created_at ? new Date(b.created_at).getTime() : 0);
+        return timeB - timeA;
+    });
+
+    // 4. Group by Day (Day-wise grouping)
+    const groups = {};
+    const todayStr = new Date().toDateString();
+    const yesterdayObj = new Date();
+    yesterdayObj.setDate(yesterdayObj.getDate() - 1);
+    const yesterdayStr = yesterdayObj.toDateString();
+
+    filtered.forEach(order => {
+        let dateObj = null;
+        if (order.placedAt) dateObj = new Date(order.placedAt);
+        else if (order.created_at) dateObj = new Date(order.created_at);
+        else if (order.timestamp?.toDate) dateObj = order.timestamp.toDate();
+        else if (order.timestamp) dateObj = new Date(order.timestamp);
+        else dateObj = new Date();
+
+        const dateKey = dateObj.toDateString();
+        let displayGroupTitle = dateObj.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
+        if (dateKey === todayStr) displayGroupTitle = '📅 Today - ' + displayGroupTitle;
+        else if (dateKey === yesterdayStr) displayGroupTitle = '📅 Yesterday - ' + displayGroupTitle;
+        else displayGroupTitle = '📅 ' + displayGroupTitle;
+
+        if (!groups[dateKey]) {
+            groups[dateKey] = { title: displayGroupTitle, orders: [] };
+        }
+        groups[dateKey].orders.push({ order, dateObj });
+    });
+
+    // 5. Render Day-wise Groups
+    const statusBadges = {
+        pending: '<span class="status-badge status-pending">PENDING</span>',
+        preparing: '<span class="status-badge status-preparing">PREPARING</span>',
+        ready: '<span class="status-badge" style="background:var(--success-bg,#dcfce7);color:var(--success,#16a34a);">READY</span>',
+        completed: '<span class="status-badge" style="background:var(--success-bg,#dcfce7);color:var(--success,#16a34a);">COMPLETED</span>',
+        cancelled: '<span class="status-badge" style="background:var(--danger-bg,#fee2e2);color:var(--danger,#dc2626);">CANCELLED</span>',
+        expired: '<span class="status-badge" style="background:var(--element-bg);color:var(--text-secondary);">EXPIRED</span>'
+    };
+
+    let html = '';
+    Object.keys(groups).forEach(dateKey => {
+        const group = groups[dateKey];
+        html += `
+            <div class="history-day-group" style="margin-bottom:1.5rem;">
+                <div style="font-weight:700;font-size:0.95rem;color:var(--primary);margin-bottom:0.75rem;padding-bottom:0.25rem;border-bottom:2px solid var(--surface-border);">
+                    ${escapeHtml(group.title)} (${group.orders.length} ${group.orders.length === 1 ? 'order' : 'orders'})
+                </div>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+        `;
+
+        group.orders.forEach(({ order, dateObj }) => {
+            const statusKey = (order.status || 'pending').toLowerCase();
+            const badgeHtml = statusBadges[statusKey] || `<span class="status-badge">${(order.status || '').toUpperCase()}</span>`;
+            const formattedTime = dateObj ? dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (order.time || '');
+            const methodText = (order.method || 'Counter').toLowerCase().includes('counter') ? '🏪 Pay at Counter' : '💳 Online Payment';
+
+            // Items breakdown HTML
+            const itemsListHtml = (order.items || []).map(i =>
+                `<span style="display:inline-block;background:var(--element-bg);padding:3px 8px;border-radius:6px;font-size:0.8rem;margin:2px 4px 2px 0;border:1px solid var(--surface-border);">
+                    <strong>${i.qty}×</strong> ${escapeHtml(i.name || '')} (${formatCurrency((i.price || 0) * (i.qty || 1))})
+                </span>`
+            ).join('');
+
+            // Review / Feedback HTML
+            let reviewHtml = '';
+            if (order.rating) {
+                const stars = '⭐'.repeat(order.rating);
+                reviewHtml = `<div style="font-size:0.8rem;color:#d97706;background:#fffbeb;padding:4px 8px;border-radius:6px;border:1px solid #fef3c7;margin-top:6px;">
+                    ${stars} ${order.feedback ? `<em>"${escapeHtml(order.feedback)}"` : ''}
+                </div>`;
+            } else if (order.cancelReason) {
+                reviewHtml = `<div style="font-size:0.78rem;color:var(--danger);margin-top:4px;">❌ Reason: ${escapeHtml(order.cancelReason)}</div>`;
+            } else {
+                reviewHtml = `<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px;">⭐ No customer review yet</div>`;
+            }
+
+            html += `
+                <div class="glass-panel" style="padding:1rem;border-radius:12px;border:1px solid var(--surface-border);">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+                        <div>
+                            <span style="font-weight:700;font-size:0.95rem;color:var(--text-primary);margin-right:8px;">${escapeHtml(order.customer || 'Student')}</span>
+                            <span style="font-size:0.8rem;color:var(--text-secondary);">#${escapeHtml(order.id)}</span>
+                            <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">
+                                🕒 ${formattedTime} &bull; ${methodText} ${order.token ? `&bull; Token: <strong>${String(order.token).padStart(3, '0')}</strong>` : ''}
+                            </div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="font-weight:700;font-size:1rem;color:var(--primary);">${formatCurrency(order.total || 0)}</span>
+                            ${badgeHtml}
+                        </div>
+                    </div>
+
+                    <!-- Ordered Items -->
+                    <div style="margin-top:6px;">
+                        <div style="font-size:0.75rem;font-weight:600;color:var(--text-secondary);margin-bottom:2px;">📦 Ordered Items:</div>
+                        <div>${itemsListHtml || '<span style="font-size:0.8rem;color:var(--text-secondary);">No items data</span>'}</div>
+                    </div>
+
+                    <!-- Review Section -->
+                    <div style="margin-top:4px;">
+                        ${reviewHtml}
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--surface-border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                        <button class="outline-btn" style="font-size:0.78rem;padding:4px 10px;border-color:var(--primary);color:var(--primary);" onclick="vendorPrintBill('${order.id}')">
+                            🖨️ View & Print Bill
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+
+        html += `</div></div>`;
+    });
+
+    container.innerHTML = html;
+    lucide.createIcons();
+}
+
+
 
 function attachSwipeGesturesToCards() {
     const cards = document.querySelectorAll('.swipeable-card');
@@ -2286,6 +3135,7 @@ function attachSwipeGesturesToCards() {
             startX = 0;
         });
     });
+    renderVendorKPIs();
 }
 
 function vendorCancelOrder(orderId) {
@@ -2704,12 +3554,16 @@ function openForgotPassword() {
     const emailEl = $('forgot-email');
     if (emailEl) emailEl.value = '';
     const errEl = $('forgot-error');
-    if (errEl) errEl.style.display = 'none';
-    $('forgot-modal').classList.add('active');
-    lucide.createIcons();
+    if (errEl) { errEl.style.display = 'none'; errEl.innerText = ''; }
+    const modal = $('forgot-modal');
+    if (modal) modal.classList.add('active');
+    if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
 }
 
-function closeForgotPassword() { $('forgot-modal').classList.remove('active'); }
+function closeForgotPassword() {
+    const modal = $('forgot-modal');
+    if (modal) modal.classList.remove('active');
+}
 
 function sendPasswordResetEmail() {
     const emailInput = $('forgot-email') ? $('forgot-email').value.trim().toLowerCase() : '';
@@ -2816,10 +3670,34 @@ function installPWA() {
     });
 }
 
-// Auto-login check on page load
+// Auto-login check and auth initialization on page load
 window.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
     
+    // Auth input Enter key listeners
+    const authInputs = ['username', 'password', 'email'];
+    authInputs.forEach(id => {
+        const el = $(id);
+        if (el) {
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAuth();
+                }
+            });
+        }
+    });
+
+    const forgotInput = $('forgot-email');
+    if (forgotInput) {
+        forgotInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendPasswordResetEmail();
+            }
+        });
+    }
+
     // Splash screen logic
     setTimeout(() => {
         const splash = $('splash-screen');

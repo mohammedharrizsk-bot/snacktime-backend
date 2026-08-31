@@ -15,7 +15,7 @@
     <meta name="apple-mobile-web-app-title" content="SNACK TIME">
     <link rel="apple-touch-icon" href="snacktime-logo.png">
 
-    <link rel="stylesheet" href="styles.css?v=1787935959487">
+    <link rel="stylesheet" href="styles.css?v=1788190628994">
     <!-- Design System Fonts: Inter (body) + Poppins (headings) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     
@@ -23,10 +23,13 @@
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Translations -->
-    <script src="translations.js?v=1787935959487"></script>
+    <script src="translations.js?v=1788190628994"></script>
 
-    <!-- Socket.io Real-Time Engine (Ultra-Fast <10ms Commercial WebSockets) -->
+    <!-- Real-Time Socket.io Engine -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    
+    <!-- Universal Cross-Network Real-Time WebRTC Mesh Engine -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     
     <!-- Chart.js CDN for Analytics -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -36,7 +39,7 @@
 
     <!-- PWA Service Worker Registration & Instant Auto-Update -->
     <script>
-    window.SNACKTIME_VERSION = '1.0.8.1787935959487';
+    window.SNACKTIME_VERSION = '1.0.8.1788190628994';
 
     (function () {
       if (!('serviceWorker' in navigator)) return;
@@ -98,6 +101,13 @@
           .catch((err) => console.warn('[SNACK TIME] SW registration notice:', err));
       });
     })();
+    </script>
+
+    <!-- ── Backend Server URL Configuration ──────────────────────────────── -->
+    <!-- Set this to your Render deployment URL so the app connects globally. -->
+    <!-- Leave empty ('') to use localhost:3000 (local development only).    -->
+    <script>
+        window.SNACKTIME_SERVER_URL = 'https://snacktime-backend.onrender.com';
     </script>
 </head>
 <body>
@@ -504,6 +514,10 @@
                             <i data-lucide="package" style="width:18px;height:18px;"></i>
                             <span>Inventory</span>
                         </div>
+                        <div class="vendor-nav-item" id="vendor-tab-history" onclick="switchVendorTab('history')">
+                            <i data-lucide="history" style="width:18px;height:18px;"></i>
+                            <span>Order History</span>
+                        </div>
                         <div class="vendor-nav-item" id="vendor-tab-analytics" onclick="switchVendorTab('analytics')">
                             <i data-lucide="bar-chart-2" style="width:18px;height:18px;"></i>
                             <span>Analytics</span>
@@ -569,8 +583,8 @@
                             <span class="chip-val" id="chip-pending-orders">0</span>
                         </div>
                         <div class="kpi-chip">
-                            <span class="chip-label">Avg Prep</span>
-                            <span class="chip-val" id="chip-avg-prep">8m</span>
+                            <span class="chip-label">Prep Time</span>
+                            <span class="chip-val" id="chip-avg-prep">0m</span>
                         </div>
                     </div>
 
@@ -600,8 +614,8 @@
                         <div class="kpi-card">
                             <div class="kpi-icon-wrapper" style="background:var(--info-bg);color:var(--info);"><i data-lucide="timer" style="width:24px;height:24px;"></i></div>
                             <div>
-                                <div class="kpi-val" id="kpi-avg-prep">8 min</div>
-                                <div class="kpi-label">Avg Prep Time</div>
+                                <div class="kpi-val" id="kpi-avg-prep">0 min</div>
+                                <div class="kpi-label">Pending Prep Time</div>
                             </div>
                         </div>
                     </div>
@@ -642,6 +656,26 @@
                                 <tbody id="inventory-body"></tbody>
                             </table>
                         </div>
+                    </div>
+
+                    <!-- ---- HISTORY OF ORDERS VIEW ---- -->
+                    <div id="vendor-history-view" class="vendor-view">
+                        <div class="table-filter-bar" style="flex-wrap:wrap;gap:10px;">
+                            <h3 class="text-section-heading">📋 Order History</h3>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:1;justify-content:flex-end;">
+                                <input type="text" id="history-search" placeholder="Search by customer, order ID…" oninput="renderVendorOrderHistory()" style="width:200px;max-width:100%;">
+                                <select id="history-status-filter" onchange="renderVendorOrderHistory()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--surface-border);background:var(--element-bg);color:var(--text-primary);font-size:13px;">
+                                    <option value="all">All Statuses</option>
+                                    <option value="pending">Pending</option>
+                                    <option value="preparing">Preparing</option>
+                                    <option value="ready">Ready</option>
+                                    <option value="completed">Completed</option>
+                                    <option value="cancelled">Cancelled</option>
+                                    <option value="expired">Expired</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="vendor-history-container" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;"></div>
                     </div>
 
                     <!-- ---- SETTINGS VIEW ---- -->
@@ -932,6 +966,10 @@
                 <i data-lucide="package" style="width:20px; height:20px;"></i>
                 <span style="font-size:10px;">Inventory</span>
             </button>
+            <button class="mobile-nav-item" id="mob-vnav-history" onclick="switchVendorTab('history')">
+                <i data-lucide="history" style="width:20px; height:20px;"></i>
+                <span style="font-size:10px;">History</span>
+            </button>
             <button class="mobile-nav-item" id="mob-vnav-analytics" onclick="switchVendorTab('analytics')">
                 <i data-lucide="bar-chart-2" style="width:20px; height:20px;"></i>
                 <span style="font-size:10px;">Analytics</span>
@@ -943,6 +981,6 @@
         </div>
     </nav>
 
-    <script src="app.js?v=1787935959487"></script>
+    <script src="app.js?v=1788190628994"></script>
 </body>
 </html>

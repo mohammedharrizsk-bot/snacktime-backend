@@ -106,19 +106,19 @@ async function mockQuery(sql, params = []) {
 
     // 1. SELECT id FROM users WHERE username = ?
     if (cleanSql.includes('SELECT id FROM users WHERE username =')) {
-        const user = jsonData.users.find(u => u.username === params[0]);
+        const user = jsonData.users.find(u => u.username.toLowerCase() === (params[0] || '').toLowerCase());
         return [user ? [{ id: user.id }] : []];
     }
 
     // 2. SELECT * FROM users WHERE username = ?
     if (cleanSql.includes('SELECT * FROM users WHERE username =')) {
-        const user = jsonData.users.find(u => u.username === params[0]);
+        const user = jsonData.users.find(u => u.username.toLowerCase() === (params[0] || '').toLowerCase());
         return [user ? [user] : []];
     }
 
     // 3. SELECT * FROM users WHERE email = ?
     if (cleanSql.includes('SELECT * FROM users WHERE email =')) {
-        const user = jsonData.users.find(u => u.email === params[0]);
+        const user = jsonData.users.find(u => u.email.toLowerCase() === (params[0] || '').toLowerCase());
         return [user ? [user] : []];
     }
 
@@ -482,7 +482,9 @@ async function createTables() {
             sold INT NOT NULL DEFAULT 0,
             is_special BOOLEAN DEFAULT FALSE,
             original_price DECIMAL(10, 2),
-            vendor_id VARCHAR(50) NULL
+            vendor_id INT DEFAULT 1,
+            version INT DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         );
     `);
 
@@ -490,6 +492,8 @@ async function createTables() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS orders (
             id VARCHAR(50) PRIMARY KEY,
+            user_id INT NULL,
+            vendor_id INT DEFAULT 1,
             customer VARCHAR(50) NOT NULL,
             total DECIMAL(10, 2) NOT NULL,
             status ENUM('pending', 'preparing', 'ready', 'completed', 'cancelled', 'expired') DEFAULT 'pending',
@@ -500,19 +504,33 @@ async function createTables() {
             feedback TEXT NULL,
             cancel_reason TEXT NULL,
             token INT NULL,
-            payment_id VARCHAR(100) NULL
+            payment_id VARCHAR(100) NULL,
+            version INT DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         );
     `);
 
     // Ensure columns exist if table was already created
     try {
+        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id INT NULL;`);
+        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;`);
+        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;`);
+        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;`);
         await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS time VARCHAR(50) NULL;`);
         await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS token INT NULL;`);
         await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(100) NULL;`);
+        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;`);
+        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;`);
+        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;`);
     } catch (e) {
+        try { await pool.query(`ALTER TABLE orders ADD COLUMN user_id INT NULL;`); } catch(err) {}
+        try { await pool.query(`ALTER TABLE orders ADD COLUMN vendor_id INT DEFAULT 1;`); } catch(err) {}
+        try { await pool.query(`ALTER TABLE orders ADD COLUMN version INT DEFAULT 1;`); } catch(err) {}
         try { await pool.query(`ALTER TABLE orders ADD COLUMN time VARCHAR(50) NULL;`); } catch(err) {}
         try { await pool.query(`ALTER TABLE orders ADD COLUMN token INT NULL;`); } catch(err) {}
         try { await pool.query(`ALTER TABLE orders ADD COLUMN payment_id VARCHAR(100) NULL;`); } catch(err) {}
+        try { await pool.query(`ALTER TABLE inventory ADD COLUMN vendor_id INT DEFAULT 1;`); } catch(err) {}
+        try { await pool.query(`ALTER TABLE inventory ADD COLUMN version INT DEFAULT 1;`); } catch(err) {}
     }
 
     // 4. Order Items Table

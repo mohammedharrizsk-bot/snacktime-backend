@@ -57,6 +57,10 @@ async function apiFetch(url, options = {}) {
             options.headers['X-CSRF-Token'] = csrfToken;
         }
     }
+    const token = localStorage.getItem('snacktime_jwt_token');
+    if (token) {
+        options.headers['Authorization'] = 'Bearer ' + token;
+    }
     options.credentials = 'include';
     const fullUrl = SERVER_BASE_URL ? `${SERVER_BASE_URL}${url}` : url;
     return fetch(fullUrl, options);
@@ -413,7 +417,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1788191450661';
+const APP_VERSION = '1.0.8.1788192545382';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -1375,7 +1379,7 @@ function register() {
 
             if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
             showNotification("✅ Account created! Logging in...", "success");
-            executeLogin(usernameInput, role, targetEmail, data.id || null);
+            executeLogin(usernameInput, role, targetEmail, data.id || null, data.token || null);
             return;
         }
 
@@ -1461,7 +1465,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
 
             if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-            executeLogin(data.username || usernameInput, data.role || role, data.email || '', data.id || null);
+            executeLogin(data.username || usernameInput, data.role || role, data.email || '', data.id || null, data.token || null);
             return;
         }
 
@@ -1477,7 +1481,12 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ username: localFound.username, email: localFound.email, password: passwordInput, role: localFound.role })
-                            }).finally(() => {
+                            }).then(async r => {
+                                let rData = {};
+                                try { rData = await r.json(); } catch(e) {}
+                                if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+                                executeLogin(localFound.username, localFound.role, localFound.email, rData.id || null, rData.token || null);
+                            }).catch(() => {
                                 if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                                 executeLogin(localFound.username, localFound.role, localFound.email);
                             });
@@ -1554,9 +1563,12 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
     });
 }
 
-function executeLogin(username, role, email = '', id = null) {
+function executeLogin(username, role, email = '', id = null, token = null) {
     currentUser = { username, role, email, id };
     localStorage.setItem('snacktime_session', JSON.stringify(currentUser));
+    if (token) {
+        localStorage.setItem('snacktime_jwt_token', token);
+    }
     initNativeNotifications();
     registerFcmToken(username);
     initUniversalWebRTCEngine();

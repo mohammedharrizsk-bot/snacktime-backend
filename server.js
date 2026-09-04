@@ -150,6 +150,11 @@ const csrfProtection = csrf({
 // Static file serving
 app.use(express.static(__dirname));
 
+// Public health & keep-alive endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now() });
+});
+
 // CSRF token endpoint (frontend calls this once on load)
 app.get('/api/csrf-token', csrfProtection, (req, res) => {
     res.json({ csrfToken: req.csrfToken() });

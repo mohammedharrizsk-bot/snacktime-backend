@@ -650,11 +650,15 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         };
 
         // Targeted emission: To vendor room, to student's user room, and to order room
+        io.to('vendors').emit('order.created', eventPayload);
         io.to(`vendor:${vendorId}`).emit('order.created', eventPayload);
+        io.to('vendors').emit('orders_updated', createdOrder);
         if (studentUserId) {
             io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
         }
-        io.to(`student_${customer}`).emit('orders_updated', createdOrder); // Legacy compatibility
+        io.to(`student_${customer}`).emit('orders_updated', createdOrder);
+        io.to(`student_${customer}`).emit('order.created', eventPayload);
+        io.to(`order:${id}`).emit('order.created', eventPayload);
 
         // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
@@ -747,12 +751,16 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
         };
 
         // Targeted emission to student, vendor, and order rooms
+        io.to('vendors').emit('order.status_changed', eventPayload);
+        io.to('vendors').emit('order_status_changed', updatedOrder);
+        io.to(`vendor:${currentOrder.vendor_id || 1}`).emit('order.status_changed', eventPayload);
         if (currentOrder.user_id) {
             io.to(`user:${currentOrder.user_id}`).emit('order.status_changed', eventPayload);
         }
-        io.to(`student_${currentOrder.customer}`).emit('order_status_changed', updatedOrder); // Legacy compatibility
-        io.to(`vendor:${currentOrder.vendor_id || 1}`).emit('order.status_changed', eventPayload);
+        io.to(`student_${currentOrder.customer}`).emit('order.status_changed', eventPayload);
+        io.to(`student_${currentOrder.customer}`).emit('order_status_changed', updatedOrder);
         io.to(`order:${id}`).emit('order.status_changed', eventPayload);
+        io.to(`order:${id}`).emit('order_status_changed', updatedOrder);
 
         if (stockRestored) {
             broadcastInventoryUpdate();
@@ -1201,6 +1209,18 @@ async function startServer() {
         };
 
         listenOnPort(PORT);
+
+        // Keep-Alive Self-Ping: Prevents Render free instances from sleeping during break times
+        const PING_INTERVAL = 10 * 60 * 1000; // Every 10 mins
+        const CLOUD_URL = process.env.RENDER_EXTERNAL_URL || 'https://snacktime-backend.onrender.com';
+        setInterval(() => {
+            try {
+                const client = CLOUD_URL.startsWith('https') ? require('https') : require('http');
+                client.get(`${CLOUD_URL}/api/health`, (res) => {
+                    console.log(`📡 Cloud Keep-Alive Ping: Status ${res.statusCode}`);
+                }).on('error', () => {});
+            } catch (e) {}
+        }, PING_INTERVAL);
     } catch (err) {
         console.error('Server failed to start:', err);
     }

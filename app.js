@@ -88,13 +88,13 @@ function initSocketConnection() {
     if (typeof io === 'undefined') return;
     if (appSocket && appSocket.connected) return;
 
-    try {
         const socketOpts = {
             withCredentials: true,
+            transports: ['websocket', 'polling'],
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
+            reconnectionDelayMax: 4000,
             timeout: 10000
         };
 
@@ -105,14 +105,14 @@ function initSocketConnection() {
             console.log('⚡ Connected to SNACK TIME Real-Time Socket.io Server:', appSocket.id);
             updateConnectionIndicator('connected');
 
-            // Re-join authorized rooms and recover state if logged in
+            // Instant state resync and room rejoin upon reconnect
             if (currentUser && currentUser.role) {
                 startDatabaseSync(currentUser.role);
             }
         });
 
         appSocket.on('disconnect', () => {
-            console.log('🔌 Disconnected from Socket.io Server. Attempting automatic reconnection...');
+            console.log('🔌 Disconnected from Socket.io Server. Polling shield active. Attempting automatic reconnection...');
             updateConnectionIndicator('reconnecting');
         });
 
@@ -131,15 +131,21 @@ function initUniversalWebRTCEngine() {
     if (typeof Peer === 'undefined') return;
     try {
         let activeRole = currentUser ? currentUser.role : null;
+        let activeUserId = currentUser ? (currentUser.id || currentUser.username) : '';
         if (!activeRole) {
             try {
                 const s = JSON.parse(localStorage.getItem('snacktime_session') || 'null');
-                if (s && s.role) activeRole = s.role;
+                if (s && s.role) {
+                    activeRole = s.role;
+                    activeUserId = s.id || s.username || '';
+                }
             } catch (e) {}
         }
 
         const isVendor = (activeRole === 'vendor');
-        const peerId = isVendor ? 'snacktime-sece-vendor-main' : ('snacktime-sece-student-' + Math.random().toString(36).substr(2, 9));
+        const peerId = isVendor
+            ? ('snacktime-sece-vendor-' + (activeUserId || 'v') + '-' + Math.random().toString(36).substr(2, 6))
+            : ('snacktime-sece-student-' + (activeUserId || 's') + '-' + Math.random().toString(36).substr(2, 6));
 
         if (webrtcPeer) {
             try { webrtcPeer.destroy(); } catch (e) {}
@@ -417,7 +423,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1788538828659';
+const APP_VERSION = '1.0.9.1788542045556';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -537,309 +543,306 @@ function applyDailySpecials() {
 
 let liveOrders = [];
 let allOrders = [];
+let _lastOrdersSig = '';
+let _lastInventorySig = '';
+let _lastSettingsSig = '';
+let _isSyncing = false;
+let _lifecycleListenersAttached = false;
 
+// ── CORE SYNC ENGINE (Reconciles REST API + Cache across all devices) ────────
+async function syncLiveOrdersAndInventory(role) {
+    if (_isSyncing) return;
+    _isSyncing = true;
+    try {
+        const activeRole = role || (currentUser ? currentUser.role : null);
+        if (!activeRole) {
+            _isSyncing = false;
+            return;
+        }
 
-function startDatabaseSync(role) {
-    stopDatabaseSync();
-
-    // Check if Node.js + MySQL REST API backend is available
-    apiFetch('/api/inventory')
-        .then(res => {
-            if (!res.ok) throw new Error("MySQL API not available");
-            return res.json();
-        })
-        .then(items => {
-            // ---- MySQL REST API + Socket.io Backend Active ----
-            inventory = items;
-            applyDailySpecials();
-            const lang = localStorage.getItem('appLanguage') || 'en';
-            translateAllInventory(lang).then(() => {
-                if (role === 'student') renderMenu();
-                if (role === 'vendor') renderInventory();
-            });
-
-            // Fetch live orders from MySQL API
-            apiFetch('/api/orders')
-                .then(r => safeParseJson(r))
-                .then(orders => {
-                    allOrders = orders;
-                    liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-                    if (role === 'vendor') {
-                        renderVendorOrders();
-                        renderVendorOrderHistory();
-                        updateVendorOrderBadge(liveOrders.length);
-                    } else if (role === 'student') {
-                        renderInlineOrderHistory();
-                    }
-                })
-                .catch(err => console.log('MySQL orders fetch notice:', err.message));
-
-            // Fetch shop settings
+        // Fetch in parallel for maximum speed & lowest latency
+        const [ordersRes, inventoryRes, settingsRes] = await Promise.allSettled([
+            apiFetch('/api/orders'),
+            apiFetch('/api/inventory'),
             apiFetch('/api/settings')
-                .then(r => safeParseJson(r))
-                .then(settings => {
-                    shopOpen = settings.shopOpen;
-                    breakEndTime = settings.breakEndTime;
-                    checkShopStatus();
-                })
-                .catch(() => {});
+        ]);
 
-            // Socket.io Real-Time Event Listeners
-            if (appSocket) {
-                // Remove previous listeners to prevent duplicate triggers
-                appSocket.off('order.created');
-                appSocket.off('order.status_changed');
-                appSocket.off('inventory.updated');
-                appSocket.off('review.created');
-                appSocket.off('shop.status_changed');
-                appSocket.off('orders_updated');
-                appSocket.off('order_status_changed');
-                appSocket.off('inventory_updated');
-                appSocket.off('reviews_updated');
-                appSocket.off('shop_status_changed');
-
-                // 1. Standardized Event: order.created
-                const handleOrderCreated = (eventPayload) => {
-                    const order = eventPayload.order || eventPayload;
-                    if (!order || !order.id) return;
-
-                    const eventKey = 'order.created_' + order.id;
-                    if (processedRealtimeKeys.has(eventKey)) return;
-                    processedRealtimeKeys.add(eventKey);
-                    setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
-
-                    const idx = allOrders.findIndex(o => o.id === order.id);
-                    if (idx !== -1) allOrders[idx] = order;
-                    else allOrders.unshift(order);
-
-                    liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-
-                    if (role === 'vendor') {
-                        renderVendorOrders();
-                        renderVendorOrderHistory();
-                        updateVendorOrderBadge(liveOrders.length);
-                        triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
-                        playOrderAlertSound();
-                        announceOrderStatus(order, 'pending');
-                    } else if (role === 'student') {
-                        renderInlineOrderHistory();
-                    }
-                };
-
-                appSocket.on('order.created', handleOrderCreated);
-                appSocket.on('orders_updated', handleOrderCreated); // Legacy compatibility
-
-                // 2. Standardized Event: order.status_changed
-                const handleOrderStatusChanged = (eventPayload) => {
-                    const orderId = eventPayload.orderId || eventPayload.id;
-                    if (!orderId) return;
-
-                    const newStatus = eventPayload.status;
-                    const eventVersion = eventPayload.version || 1;
-
-                    const targetOrder = allOrders.find(o => o.id === orderId);
-                    if (targetOrder) {
-                        // Stale event protection: ignore older version events
-                        if (targetOrder.version && eventVersion < targetOrder.version) return;
-                        targetOrder.status = newStatus;
-                        targetOrder.version = eventVersion;
-                        if (eventPayload.cancelReason) targetOrder.cancelReason = eventPayload.cancelReason;
-                    } else {
-                        allOrders.unshift({
-                            id: orderId,
-                            status: newStatus,
-                            customer: eventPayload.customer,
-                            version: eventVersion
-                        });
-                    }
-
-                    liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-
-                    if (role === 'student') {
-                        const isMyOrder = (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
-                                          (currentUser && eventPayload.customer === currentUser.username) ||
-                                          (currentOrder && currentOrder.id === orderId);
-
-                        if (isMyOrder) {
-                            if (currentOrder && currentOrder.id === orderId) {
-                                currentOrder.status = newStatus;
-                                currentOrder.version = eventVersion;
-                            }
-                            updateTrackingUI(newStatus);
-                            updateTrackingTimeline(newStatus);
-
-                            const statusLower = (newStatus || '').toLowerCase();
-                            if (statusLower === 'preparing') {
-                                triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${orderId}`);
-                            } else if (statusLower === 'ready') {
-                                triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
-                                playOrderAlertSound();
-                            } else if (statusLower === 'completed') {
-                                triggerLiveNotification('✅ Order Completed', `Order #${orderId} collected. Thank you!`);
-                            } else if (statusLower === 'cancelled') {
-                                triggerLiveNotification('❌ Order Cancelled', `Order #${orderId} was cancelled.`);
-                            }
-                        }
-                        renderInlineOrderHistory();
-                    } else if (role === 'vendor') {
-                        renderVendorOrders();
-                        renderVendorOrderHistory();
-                        updateVendorOrderBadge(liveOrders.length);
-                        const statusLower = (newStatus || '').toLowerCase();
-                        if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
-                            const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
-                            announceOrderStatus(readyOrder, statusLower);
-                        }
-                    }
-                };
-
-                appSocket.on('order.status_changed', handleOrderStatusChanged);
-                appSocket.on('order_status_changed', handleOrderStatusChanged); // Legacy compatibility
-
-                // 3. Standardized Event: inventory.updated
-                const handleInventoryUpdated = (eventPayload) => {
-                    const newInventory = (eventPayload && eventPayload.inventory) ? eventPayload.inventory : eventPayload;
-                    if (Array.isArray(newInventory) && newInventory.length > 0) {
-                        inventory = newInventory;
-                        applyDailySpecials();
-                        if (role === 'student') renderMenu();
-                        if (role === 'vendor') renderInventory();
-                    } else {
-                        apiFetch('/api/inventory').then(r=>safeParseJson(r)).then(cloudItems => {
-                            inventory = cloudItems;
-                            applyDailySpecials();
-                            if (role === 'student') renderMenu();
-                            if (role === 'vendor') renderInventory();
-                        }).catch(() => {});
-                    }
-                };
-
-                appSocket.on('inventory.updated', handleInventoryUpdated);
-                appSocket.on('inventory_updated', handleInventoryUpdated); // Legacy compatibility
-
-                // 4. Standardized Event: review.created
-                const handleReviewCreated = (eventPayload) => {
-                    const review = eventPayload.review || eventPayload;
-                    if (!review) return;
-                    allReviews.unshift(review);
-                    if (role === 'vendor') {
-                        renderVendorReviews();
-                    }
-                };
-
-                appSocket.on('review.created', handleReviewCreated);
-                appSocket.on('reviews_updated', handleReviewCreated); // Legacy compatibility
-
-                // 5. Standardized Event: shop.status_changed
-                const handleShopStatusChanged = (eventPayload) => {
-                    if (typeof eventPayload.shopOpen !== 'undefined') {
-                        shopOpen = eventPayload.shopOpen;
-                    }
-                    if (typeof eventPayload.breakEndTime !== 'undefined') {
-                        breakEndTime = eventPayload.breakEndTime;
-                    }
-                    checkShopStatus();
-                };
-
-                appSocket.on('shop.status_changed', handleShopStatusChanged);
-                appSocket.on('shop_status_changed', handleShopStatusChanged); // Legacy compatibility
-            }
-        })
-        .catch(() => {
-            // ── API unavailable (static hosting / offline) ─────────────────────
-            // Load inventory from localStorage first, then default
-            const savedInventory = (() => {
-                try { return JSON.parse(localStorage.getItem('snacktime_inventory') || 'null'); } catch { return null; }
-            })();
-            if (savedInventory && Array.isArray(savedInventory) && savedInventory.length > 0) {
-                inventory = savedInventory;
-            }
-            applyDailySpecials();
-
-            const savedOrders = (() => {
-                try { return JSON.parse(localStorage.getItem('snacktime_orders') || '[]'); } catch { return []; }
-            })();
-            if (savedOrders.length > 0) {
-                allOrders = savedOrders;
-                liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
-            }
-
-            if (role === 'student') {
-                renderMenu();
-                renderInlineOrderHistory();
-            } else if (role === 'vendor') {
-                renderInventory();
-                renderVendorOrders();
-                updateVendorOrderBadge(liveOrders.length);
-            }
-            checkShopStatus();
-
-            // ── Smart Polling Engine ────────────────────────────────────────────
-            // Polls localStorage every 2 seconds for changes made by OTHER tabs
-            // on the SAME device. BroadcastChannel already handles same-tab sync
-            // instantly; this catches edge cases and serves as a reliable backup.
-            if (window._syncPollingInterval) clearInterval(window._syncPollingInterval);
-
-            let _lastOrdersSig = JSON.stringify(allOrders.map(o => o.id + ':' + o.status));
-            let _lastInventorySig = JSON.stringify(inventory.map(i => i.id + ':' + i.stock + ':' + i.price));
-
-            window._syncPollingInterval = setInterval(() => {
-                if (!currentUser) return;
-
-                // ── Poll Orders ───────────────────────────────────────────────
-                const rawOrders = (() => {
-                    try { return JSON.parse(localStorage.getItem('snacktime_orders') || '[]'); } catch { return []; }
-                })();
-                const newOrdersSig = JSON.stringify(rawOrders.map(o => o.id + ':' + o.status));
-                if (newOrdersSig !== _lastOrdersSig) {
-                    _lastOrdersSig = newOrdersSig;
-                    const prevLiveCount = liveOrders.length;
+        // 1. Process Live Orders
+        if (ordersRes.status === 'fulfilled' && ordersRes.value.ok) {
+            const rawOrders = await safeParseJson(ordersRes.value);
+            if (Array.isArray(rawOrders)) {
+                const newSig = JSON.stringify(rawOrders.map(o => o.id + ':' + o.status + ':' + (o.version || 1) + ':' + (o.token || '')));
+                if (newSig !== _lastOrdersSig) {
+                    const prevLiveIds = new Set(liveOrders.map(o => o.id));
+                    _lastOrdersSig = newSig;
                     allOrders = rawOrders;
                     liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
-                    if (currentUser.role === 'vendor') {
+                    if (activeRole === 'vendor') {
                         renderVendorOrders();
+                        renderVendorOrderHistory();
                         updateVendorOrderBadge(liveOrders.length);
-                        if (liveOrders.length > prevLiveCount) {
-                            const newest = liveOrders[0];
-                            triggerLiveNotification('🔔 NEW ORDER!', `Order from ${newest.customer || 'Student'} (₹${newest.total || ''})`);
+
+                        // Detect incoming unhandled new orders for audio/visual alerts
+                        const newPending = liveOrders.find(o => !prevLiveIds.has(o.id) && (o.status || 'pending').toLowerCase() === 'pending');
+                        if (newPending) {
+                            triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${newPending.id} - ${newPending.customer || 'Student'} (₹${newPending.total || 0})`);
                             playOrderAlertSound();
+                            announceOrderStatus(newPending, 'pending');
                         }
-                    } else if (currentUser.role === 'student') {
+                    } else if (activeRole === 'student') {
                         renderInlineOrderHistory();
-                        // Update tracking UI for current student's order
-                        if (currentOrder) {
+
+                        // Automatically update active tracking screen
+                        if (currentOrder && currentOrder.id) {
                             const updated = allOrders.find(o => o.id === currentOrder.id);
                             if (updated && updated.status !== currentOrder.status) {
+                                const oldStatus = currentOrder.status;
                                 currentOrder.status = updated.status;
+                                currentOrder.version = updated.version || (currentOrder.version + 1);
+                                if (updated.token) currentOrder.token = updated.token;
+
                                 updateTrackingUI(updated.status);
                                 updateTrackingTimeline(updated.status);
-                                const s = updated.status.toLowerCase();
-                                if (s === 'preparing') triggerLiveNotification('👨‍🍳 Order Preparing!', `Kitchen is preparing Order #${updated.id}`);
-                                else if (s === 'ready') triggerLiveNotification('🔔 Order READY!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`);
-                                else if (s === 'completed') triggerLiveNotification('✅ Completed', `Order #${updated.id} collected. Thank you!`);
-                                else if (s === 'cancelled') triggerLiveNotification('❌ Cancelled', `Order #${updated.id} was cancelled.`);
+
+                                const s = (updated.status || '').toLowerCase();
+                                if (s === 'preparing') {
+                                    triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${updated.id}`);
+                                } else if (s === 'ready') {
+                                    triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`);
+                                    playOrderAlertSound();
+                                } else if (s === 'completed') {
+                                    triggerLiveNotification('✅ Order Completed', `Order #${updated.id} collected. Thank you!`);
+                                } else if (s === 'cancelled') {
+                                    triggerLiveNotification('❌ Order Cancelled', `Order #${updated.id} was cancelled.`);
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
 
-                // ── Poll Inventory ────────────────────────────────────────────
-                const rawInventory = (() => {
-                    try { return JSON.parse(localStorage.getItem('snacktime_inventory') || 'null'); } catch { return null; }
-                })();
-                if (rawInventory && Array.isArray(rawInventory) && rawInventory.length > 0) {
-                    const newInventorySig = JSON.stringify(rawInventory.map(i => i.id + ':' + i.stock + ':' + i.price));
-                    if (newInventorySig !== _lastInventorySig) {
-                        _lastInventorySig = newInventorySig;
-                        inventory = rawInventory;
-                        applyDailySpecials();
-                        if (currentUser.role === 'vendor') renderInventory();
-                        else renderMenu();
+        // 2. Process Inventory
+        if (inventoryRes.status === 'fulfilled' && inventoryRes.value.ok) {
+            const rawItems = await safeParseJson(inventoryRes.value);
+            if (Array.isArray(rawItems) && rawItems.length > 0) {
+                const newInvSig = JSON.stringify(rawItems.map(i => i.id + ':' + i.stock + ':' + i.price + ':' + (i.isSpecial ? '1' : '0')));
+                if (newInvSig !== _lastInventorySig) {
+                    _lastInventorySig = newInvSig;
+                    inventory = rawItems;
+                    applyDailySpecials();
+                    const lang = localStorage.getItem('appLanguage') || 'en';
+                    translateAllInventory(lang).then(() => {
+                        if (activeRole === 'student') renderMenu();
+                        if (activeRole === 'vendor') renderInventory();
+                    });
+                }
+            }
+        }
+
+        // 3. Process Shop Settings
+        if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
+            const rawSettings = await safeParseJson(settingsRes.value);
+            if (rawSettings && typeof rawSettings === 'object') {
+                const newSetSig = JSON.stringify(rawSettings);
+                if (newSetSig !== _lastSettingsSig) {
+                    _lastSettingsSig = newSetSig;
+                    shopOpen = typeof rawSettings.shopOpen !== 'undefined' ? rawSettings.shopOpen : true;
+                    breakEndTime = rawSettings.breakEndTime || null;
+                    checkShopStatus();
+                }
+            }
+        }
+    } catch (e) {
+        // Fallback for static/offline mock mode
+        const savedOrders = (() => { try { return JSON.parse(localStorage.getItem('snacktime_orders') || '[]'); } catch { return []; } })();
+        if (savedOrders.length > 0) {
+            allOrders = savedOrders;
+            liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+            if (role === 'vendor') {
+                renderVendorOrders();
+                updateVendorOrderBadge(liveOrders.length);
+            } else if (role === 'student') {
+                renderInlineOrderHistory();
+            }
+        }
+    } finally {
+        _isSyncing = false;
+    }
+}
+
+function startDatabaseSync(role) {
+    stopDatabaseSync();
+    const activeRole = role || (currentUser ? currentUser.role : null);
+
+    // 1. Initial State Hydration
+    syncLiveOrdersAndInventory(activeRole);
+
+    // 2. Setup Socket.io Real-Time Push Engine
+    if (appSocket) {
+        appSocket.off('order.created');
+        appSocket.off('order.status_changed');
+        appSocket.off('inventory.updated');
+        appSocket.off('review.created');
+        appSocket.off('shop.status_changed');
+        appSocket.off('orders_updated');
+        appSocket.off('order_status_changed');
+        appSocket.off('inventory_updated');
+        appSocket.off('reviews_updated');
+        appSocket.off('shop_status_changed');
+
+        const handleOrderCreated = (eventPayload) => {
+            const order = eventPayload.order || eventPayload;
+            if (!order || !order.id) return;
+
+            const eventKey = 'order.created_' + order.id;
+            if (processedRealtimeKeys.has(eventKey)) return;
+            processedRealtimeKeys.add(eventKey);
+            setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
+
+            const idx = allOrders.findIndex(o => o.id === order.id);
+            if (idx !== -1) allOrders[idx] = order;
+            else allOrders.unshift(order);
+
+            liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+
+            if (activeRole === 'vendor') {
+                renderVendorOrders();
+                renderVendorOrderHistory();
+                updateVendorOrderBadge(liveOrders.length);
+                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
+                playOrderAlertSound();
+                announceOrderStatus(order, 'pending');
+            } else if (activeRole === 'student') {
+                renderInlineOrderHistory();
+            }
+        };
+
+        const handleOrderStatusChanged = (eventPayload) => {
+            const orderId = eventPayload.orderId || eventPayload.id;
+            if (!orderId) return;
+
+            const newStatus = eventPayload.status;
+            const eventVersion = eventPayload.version || 1;
+
+            const targetOrder = allOrders.find(o => o.id === orderId);
+            if (targetOrder) {
+                if (targetOrder.version && eventVersion < targetOrder.version) return;
+                targetOrder.status = newStatus;
+                targetOrder.version = eventVersion;
+                if (eventPayload.cancelReason) targetOrder.cancelReason = eventPayload.cancelReason;
+                if (eventPayload.token) targetOrder.token = eventPayload.token;
+            } else {
+                allOrders.unshift({
+                    id: orderId,
+                    status: newStatus,
+                    customer: eventPayload.customer,
+                    token: eventPayload.token,
+                    version: eventVersion
+                });
+            }
+
+            liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
+
+            if (activeRole === 'student') {
+                const isMyOrder = (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
+                                  (currentUser && eventPayload.customer === currentUser.username) ||
+                                  (currentOrder && currentOrder.id === orderId);
+
+                if (isMyOrder) {
+                    if (currentOrder && currentOrder.id === orderId) {
+                        currentOrder.status = newStatus;
+                        currentOrder.version = eventVersion;
+                        if (eventPayload.token) currentOrder.token = eventPayload.token;
+                    }
+                    updateTrackingUI(newStatus);
+                    updateTrackingTimeline(newStatus);
+
+                    const statusLower = (newStatus || '').toLowerCase();
+                    if (statusLower === 'preparing') {
+                        triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${orderId}`);
+                    } else if (statusLower === 'ready') {
+                        triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
+                        playOrderAlertSound();
+                    } else if (statusLower === 'completed') {
+                        triggerLiveNotification('✅ Order Completed', `Order #${orderId} collected. Thank you!`);
+                    } else if (statusLower === 'cancelled') {
+                        triggerLiveNotification('❌ Order Cancelled', `Order #${orderId} was cancelled.`);
                     }
                 }
-            }, 2000); // poll every 2 seconds
+                renderInlineOrderHistory();
+            } else if (activeRole === 'vendor') {
+                renderVendorOrders();
+                renderVendorOrderHistory();
+                updateVendorOrderBadge(liveOrders.length);
+                const statusLower = (newStatus || '').toLowerCase();
+                if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
+                    const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
+                    announceOrderStatus(readyOrder, statusLower);
+                }
+            }
+        };
+
+        const handleInventoryUpdated = (eventPayload) => {
+            const newInventory = (eventPayload && eventPayload.inventory) ? eventPayload.inventory : eventPayload;
+            if (Array.isArray(newInventory) && newInventory.length > 0) {
+                inventory = newInventory;
+                applyDailySpecials();
+                if (activeRole === 'student') renderMenu();
+                if (activeRole === 'vendor') renderInventory();
+            } else {
+                syncLiveOrdersAndInventory(activeRole);
+            }
+        };
+
+        const handleShopStatusChanged = (eventPayload) => {
+            if (typeof eventPayload.shopOpen !== 'undefined') {
+                shopOpen = eventPayload.shopOpen;
+            }
+            if (typeof eventPayload.breakEndTime !== 'undefined') {
+                breakEndTime = eventPayload.breakEndTime;
+            }
+            checkShopStatus();
+        };
+
+        appSocket.on('order.created', handleOrderCreated);
+        appSocket.on('orders_updated', handleOrderCreated);
+        appSocket.on('order.status_changed', handleOrderStatusChanged);
+        appSocket.on('order_status_changed', handleOrderStatusChanged);
+        appSocket.on('inventory.updated', handleInventoryUpdated);
+        appSocket.on('inventory_updated', handleInventoryUpdated);
+        appSocket.on('shop.status_changed', handleShopStatusChanged);
+        appSocket.on('shop_status_changed', handleShopStatusChanged);
+    }
+
+    // 3. Adaptive Smart Polling Shield (Guarantees zero-drop sync across all mobile devices & laptops)
+    const pollIntervalMs = (activeRole === 'vendor') ? 3000 : 4000;
+    window._syncPollingInterval = setInterval(() => {
+        if (!currentUser) return;
+        syncLiveOrdersAndInventory(activeRole);
+    }, pollIntervalMs);
+
+    // 4. Mobile Lifecycle & Tab Focus Shield (Instant resync when unlocking phone or switching back)
+    if (!_lifecycleListenersAttached) {
+        _lifecycleListenersAttached = true;
+
+        const instantResync = () => {
+            if (currentUser && currentUser.role) {
+                syncLiveOrdersAndInventory(currentUser.role);
+                // Ensure socket is active and connected
+                if (appSocket && !appSocket.connected) {
+                    appSocket.connect();
+                }
+            }
+        };
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') instantResync();
         });
+        window.addEventListener('focus', instantResync);
+        window.addEventListener('online', instantResync);
+    }
 }
 
 function clearBreakTimerLocally(clearEndTime = true) {
@@ -852,7 +855,6 @@ function clearBreakTimerLocally(clearEndTime = true) {
 
 function stopDatabaseSync() {
     clearBreakTimerLocally();
-    // Stop the polling engine on logout
     if (window._syncPollingInterval) {
         clearInterval(window._syncPollingInterval);
         window._syncPollingInterval = null;

@@ -115,23 +115,23 @@ app.use(cors({
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-// Global Rate limiter for API endpoints (DDoS / Brute-force protection)
+// High-capacity rate limiters for campus scale (4000+ students/staff & vendors sharing college Wi-Fi)
 const globalApiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 300,
+    max: 50000,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { message: 'Too many requests from this IP, please try again later.' }
+    message: { message: 'Too many requests from this network, please try again in a few moments.' }
 });
 app.use('/api/', globalApiLimiter);
 
-// Rate limiter for auth endpoints
+// Rate limiter for auth endpoints (supports burst campus cafeteria logins)
 const authLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: 5,
+    max: 5000,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { message: 'Too many login/registration attempts, please try again in a minute.' }
+    message: { message: 'Too many login attempts from this network, please try again in a few moments.' }
 });
 
 // CSRF protection

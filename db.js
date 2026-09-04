@@ -22,7 +22,10 @@ function loadEnv() {
 }
 loadEnv();
 
-// MySQL Connection Configuration
+// PostgreSQL & MySQL Connection Configuration
+const DEFAULT_PG_URL = 'postgresql://snacktime_user:PT1ICFTuGctt8QS7da3FmVWMMJ8bLw33@dpg-dadeph2fngtc73b3vv7g-a.singapore-postgres.render.com:5432/snacktime';
+const POSTGRES_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || DEFAULT_PG_URL;
+
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -32,11 +35,61 @@ const dbConfig = {
 
 let pool = null;
 let activePool = null;
-let isMySQL = true;
+let pgPool = null;
+let currentEngine = 'mock'; // 'pg', 'mysql', 'mock'
+let isMySQL = false;
 
 // Pre-seeded hashes for default accounts
 const DEFAULT_VENDOR_HASH = bcrypt.hashSync('vendor123', 10);
 const DEFAULT_STUDENT_HASH = bcrypt.hashSync('student123', 10);
+
+// ========================= POSTGRESQL QUERY ADAPTER =========================
+function translateSqlForPg(sql) {
+    let paramIdx = 1;
+    let cleanSql = sql.replace(/\?/g, () => '$' + (paramIdx++));
+    const upper = cleanSql.trim().toUpperCase();
+    if (upper.startsWith('INSERT INTO') && !upper.includes('RETURNING')) {
+        cleanSql += ' RETURNING id';
+    }
+    return cleanSql;
+}
+
+async function queryPg(sql, params = []) {
+    const pgSql = translateSqlForPg(sql);
+    const res = await pgPool.query(pgSql, params);
+    const upper = sql.trim().toUpperCase();
+    if (upper.startsWith('SELECT')) {
+        return [res.rows, res.fields];
+    } else if (upper.startsWith('INSERT')) {
+        const insertId = res.rows[0] ? (res.rows[0].id || null) : null;
+        return [{ insertId, affectedRows: res.rowCount }, res.fields];
+    } else {
+        return [{ affectedRows: res.rowCount }, res.fields];
+    }
+}
+
+async function getPgConnection() {
+    const client = await pgPool.connect();
+    return {
+        query: async (sql, params = []) => {
+            const pgSql = translateSqlForPg(sql);
+            const res = await client.query(pgSql, params);
+            const upper = sql.trim().toUpperCase();
+            if (upper.startsWith('SELECT')) {
+                return [res.rows, res.fields];
+            } else if (upper.startsWith('INSERT')) {
+                const insertId = res.rows[0] ? (res.rows[0].id || null) : null;
+                return [{ insertId, affectedRows: res.rowCount }, res.fields];
+            } else {
+                return [{ affectedRows: res.rowCount }, res.fields];
+            }
+        },
+        beginTransaction: async () => { await client.query('BEGIN'); },
+        commit: async () => { await client.query('COMMIT'); },
+        rollback: async () => { await client.query('ROLLBACK'); },
+        release: () => { client.release(); }
+    };
+}
 
 // ========================= MOCK JSON DATABASE ENGINE =========================
 let jsonData = {
@@ -412,15 +465,35 @@ const mockPool = {
 
 // ========================= DB INIT & SCHEMAS =========================
 async function initDB() {
+    // 1. Try Cloud PostgreSQL First (Always-on, persistent cloud database)
+    if (POSTGRES_URL) {
+        try {
+            const { Pool } = require('pg');
+            pgPool = new Pool({
+                connectionString: POSTGRES_URL,
+                ssl: { rejectUnauthorized: false }
+            });
+            await pgPool.query('SELECT NOW()');
+            currentEngine = 'pg';
+            console.log('🐘 Connected to Cloud PostgreSQL Database successfully!');
+            await createPgTables();
+            await seedPgDatabase();
+            return;
+        } catch (e) {
+            console.warn('⚠️ Cloud PostgreSQL connection notice:', e.message);
+        }
+    }
+
+    // 2. Try MySQL Second (Local on-premises campus server)
     const defaultPassword = dbConfig.password;
     const passwordsToTry = [defaultPassword, '', 'root', 'admin', 'password', '123456', '12345678', 'mysql'];
     const uniquePasswords = [...new Set(passwordsToTry)];
     
     let connected = false;
-    let lastError = null;
 
     for (const pwd of uniquePasswords) {
         try {
+            const mysql = require('mysql2/promise');
             const connection = await mysql.createConnection({
                 host: dbConfig.host,
                 user: dbConfig.user,
@@ -431,11 +504,11 @@ async function initDB() {
 
             dbConfig.password = pwd;
             connected = true;
+            currentEngine = 'mysql';
             isMySQL = true;
             console.log(`🔑 Connected to MySQL successfully using password: "${pwd}"`);
             break;
         } catch (e) {
-            lastError = e;
             if (e.code === 'ECONNREFUSED') {
                 break;
             }
@@ -443,19 +516,65 @@ async function initDB() {
     }
 
     if (connected) {
+        const mysql = require('mysql2/promise');
         pool = mysql.createPool(dbConfig);
         activePool = pool;
         await createTables();
         await seedDatabase();
         console.log('✅ MySQL Database initialized and tables checked.');
     } else {
+        currentEngine = 'mock';
         isMySQL = false;
         loadJSON();
-        console.log(`
-⚠️ MySQL connection failed (Access Denied or Not Running).
-👉 FALLING BACK to a self-contained local JSON database ("snacktime_db.json")!
-🚀 Node server running offline mode — everything will work out of the box with zero dependencies!
-        `);
+        console.log('📦 Using Local JSON Database Engine ("snacktime_db.json").');
+    }
+}
+
+async function createPgTables() {
+    await pgPool.query('CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE NOT NULL, email VARCHAR(100) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS inventory (id SERIAL PRIMARY KEY, name VARCHAR(100) UNIQUE NOT NULL, price DECIMAL(10, 2) NOT NULL, stock INT NOT NULL DEFAULT 0, sold INT NOT NULL DEFAULT 0, is_special BOOLEAN DEFAULT FALSE, original_price DECIMAL(10, 2), vendor_id INT DEFAULT 1, version INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS orders (id VARCHAR(50) PRIMARY KEY, user_id INT NULL, vendor_id INT DEFAULT 1, customer VARCHAR(50) NOT NULL, total DECIMAL(10, 2) NOT NULL, status VARCHAR(20) DEFAULT \'pending\', time VARCHAR(50) NULL, placed_at BIGINT NOT NULL, method VARCHAR(50) NOT NULL, rating INT NULL, feedback TEXT NULL, cancel_reason TEXT NULL, token INT NULL, payment_id VARCHAR(100) NULL, version INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS order_items (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL REFERENCES orders(id) ON DELETE CASCADE, item_id INT NOT NULL, name VARCHAR(100) NOT NULL, qty INT NOT NULL, price DECIMAL(10, 2) NOT NULL)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS settings (setting_key VARCHAR(50) PRIMARY KEY, setting_value VARCHAR(255))');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS reviews (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer VARCHAR(50) NOT NULL, items TEXT NOT NULL, rating INT NOT NULL, feedback TEXT NULL, time VARCHAR(100) NOT NULL)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS support_tickets (id SERIAL PRIMARY KEY, username VARCHAR(50) NOT NULL, order_id VARCHAR(50) NULL, message TEXT NOT NULL, status VARCHAR(20) DEFAULT \'open\', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+}
+
+async function seedPgDatabase() {
+    const userRes = await pgPool.query('SELECT COUNT(*) as count FROM users');
+    if (parseInt(userRes.rows[0].count) === 0) {
+        await pgPool.query('INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, $3, $4)', ['vendor', 'vendor@vendor.snacktime.com', DEFAULT_VENDOR_HASH, 'vendor']);
+        await pgPool.query('INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, $3, $4)', ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student']);
+        console.log('🌱 Default accounts seeded into Cloud PostgreSQL DB!');
+    }
+
+    const invRes = await pgPool.query('SELECT COUNT(*) as count FROM inventory');
+    if (parseInt(invRes.rows[0].count) === 0) {
+        const items = [
+            ['Samosa', 15, 50],
+            ['Cold Coffee', 40, 30],
+            ['Masala Dosa', 60, 20],
+            ['Veg Sandwich', 35, 40],
+            ['Tea', 10, 80],
+            ['Coffee', 15, 60],
+            ['Biscuits', 10, 100],
+            ['Bonda', 20, 40],
+            ['Sugarcane Juice', 30, 25],
+            ['Sweet Corn', 25, 35],
+            ['French Fries', 50, 30],
+            ['Horlicks', 20, 50],
+            ['Boost', 20, 50]
+        ];
+        for (const item of items) {
+            await pgPool.query('INSERT INTO inventory (name, price, stock) VALUES ($1, $2, $3)', item);
+        }
+        console.log('🌱 Default inventory seeded into Cloud PostgreSQL DB!');
+    }
+
+    const setRes = await pgPool.query('SELECT COUNT(*) as count FROM settings WHERE setting_key = $1', ['shop_status']);
+    if (parseInt(setRes.rows[0].count) === 0) {
+        await pgPool.query('INSERT INTO settings (setting_key, setting_value) VALUES ($1, $2)', ['shop_status', 'open']);
+        await pgPool.query('INSERT INTO settings (setting_key, setting_value) VALUES ($1, $2)', ['break_end_time', 'null']);
     }
 }
 
@@ -629,8 +748,10 @@ async function seedDatabase() {
 }
 
 // Wrapper query execution mapping
-async function query(sql, params) {
-    if (isMySQL) {
+async function query(sql, params = []) {
+    if (currentEngine === 'pg') {
+        return queryPg(sql, params);
+    } else if (currentEngine === 'mysql') {
         return activePool.query(sql, params);
     } else {
         return mockQuery(sql, params);
@@ -639,7 +760,12 @@ async function query(sql, params) {
 
 // Wrapper pool mapping
 function getPool() {
-    if (isMySQL) {
+    if (currentEngine === 'pg') {
+        return {
+            query: async (sql, params = []) => queryPg(sql, params),
+            getConnection: async () => getPgConnection()
+        };
+    } else if (currentEngine === 'mysql') {
         return activePool;
     } else {
         return mockPool;

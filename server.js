@@ -201,9 +201,15 @@ app.post('/api/register', authLimiter, async (req, res) => {
         : `${username.toLowerCase().trim()}@vendor.snacktime.com`;
 
     try {
-        const [existing] = await db.query('SELECT id FROM users WHERE LOWER(username) = ?', [username.toLowerCase().trim()]);
-        if (existing.length > 0)
-            return res.status(400).json({ message: 'Username is already taken.' });
+        const [existingEmail] = await db.query('SELECT id FROM users WHERE LOWER(email) = ?', [targetEmail]);
+        if (existingEmail && existingEmail.length > 0) {
+            return res.status(400).json({ message: 'An account with this email address already exists. Please log in or reset your password.' });
+        }
+
+        const [existingUser] = await db.query('SELECT id FROM users WHERE LOWER(username) = ?', [username.toLowerCase().trim()]);
+        if (existingUser && existingUser.length > 0) {
+            return res.status(400).json({ message: 'This username is already taken. Please choose another username.' });
+        }
 
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash(password, salt);

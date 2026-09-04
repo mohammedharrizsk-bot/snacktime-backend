@@ -354,24 +354,22 @@ app.post('/api/forgot-password', authLimiter, async (req, res) => {
         const resetLink = `${frontendUrl}/?action=reset-password&token=${resetToken}&username=${encodeURIComponent(user.username)}`;
 
         if (mailTransporter && user.email && !user.email.endsWith('@vendor.snacktime.com')) {
-            try {
-                await mailTransporter.sendMail({
-                    from: '"SNACK TIME Campus Cafe" <noreply@snacktime.sece.ac.in>',
-                    to: user.email,
-                    subject: 'SNACK TIME - Password Recovery Link',
-                    html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:500px;margin:0 auto;border:1px solid #eee;border-radius:12px;">
-                            <h2 style="color:#ff6b35;">SNACK TIME Password Recovery</h2>
-                            <p>Hello <strong>${user.username}</strong>,</p>
-                            <p>You requested a password reset for your SNACK TIME account.</p>
-                            <p style="margin:20px 0;">
-                                <a href="${resetLink}" style="background:#ff6b35;color:#fff;padding:12px 24px;text-decoration:none;border-radius:20px;font-weight:bold;display:inline-block;">Reset Password Now</a>
-                            </p>
-                            <p style="font-size:0.85rem;color:#888;">If you did not request this, you can safely ignore this email.</p>
-                           </div>`
-                });
-            } catch (mailErr) {
+            mailTransporter.sendMail({
+                from: '"SNACK TIME Campus Cafe" <noreply@snacktime.sece.ac.in>',
+                to: user.email,
+                subject: 'SNACK TIME - Password Recovery Link',
+                html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:500px;margin:0 auto;border:1px solid #eee;border-radius:12px;">
+                        <h2 style="color:#ff6b35;">SNACK TIME Password Recovery</h2>
+                        <p>Hello <strong>${user.username}</strong>,</p>
+                        <p>You requested a password reset for your SNACK TIME account.</p>
+                        <p style="margin:20px 0;">
+                            <a href="${resetLink}" style="background:#ff6b35;color:#fff;padding:12px 24px;text-decoration:none;border-radius:20px;font-weight:bold;display:inline-block;">Reset Password Now</a>
+                        </p>
+                        <p style="font-size:0.85rem;color:#888;">If you did not request this, you can safely ignore this email.</p>
+                       </div>`
+            }).catch(mailErr => {
                 console.warn('SMTP mail send warning:', mailErr.message);
-            }
+            });
         }
 
         res.json({

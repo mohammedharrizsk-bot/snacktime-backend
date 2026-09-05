@@ -423,7 +423,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.10.1788547752182';
+const APP_VERSION = '1.0.11.1788584819463';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -2639,24 +2639,30 @@ function updateTrackingUI(status) {
         if (s === 'pending' || s === 'preparing') {
             queueInfoEl.style.display = 'flex';
 
-            // Filter active orders ahead in queue
-            const activeQueue = (allOrders || []).filter(o =>
-                ['pending', 'preparing'].includes((o.status || '').toLowerCase())
-            );
+            // Check if server calculated queueAhead or compute from local queue
+            let aheadCount = (typeof currentOrder.queueAhead === 'number') ? currentOrder.queueAhead : 0;
+            if (typeof currentOrder.queueAhead === 'undefined') {
+                const activeQueue = (allOrders || []).filter(o =>
+                    ['pending', 'preparing'].includes((o.status || '').toLowerCase())
+                );
+                const myIndex = activeQueue.findIndex(o => o.id === currentOrder.id);
+                aheadCount = myIndex !== -1 ? myIndex : 0;
+            }
 
-            // Find index of current order in active queue
-            const myIndex = activeQueue.findIndex(o => o.id === currentOrder.id);
-            const position = myIndex !== -1 ? (myIndex + 1) : 1;
+            const position = aheadCount + 1;
+            const estMinutes = currentOrder.estMinutes || Math.max(3, position * 3);
 
-            // Estimated wait time based on position in queue (~3 mins per order ahead)
-            const estMinutes = Math.max(3, position * 3);
-
-            queuePosEl.innerText = position === 1 ? '🎯 Next in line!' : `#${position} in line`;
-            waitTimeEl.innerText = `~${estMinutes} mins`;
+            if (aheadCount === 0) {
+                queuePosEl.innerText = '🎯 Next in line (0 ahead)';
+                waitTimeEl.innerText = '~3 mins';
+            } else {
+                queuePosEl.innerText = `#${position} in Queue (${aheadCount} ahead)`;
+                waitTimeEl.innerText = `~${estMinutes} mins`;
+            }
         } else if (s === 'ready') {
             queueInfoEl.style.display = 'flex';
-            queuePosEl.innerText = '✅ Counter Pickup';
-            waitTimeEl.innerText = 'Ready Now';
+            queuePosEl.innerText = '✅ Ready at Counter';
+            waitTimeEl.innerText = 'Collect Now';
         } else {
             queueInfoEl.style.display = 'none';
         }
@@ -3661,10 +3667,14 @@ function renderInlineOrderHistory() {
     container.innerHTML = myOrders.map(order => {
         const ageMinutes = (Date.now() - (order.placedAt || 0)) / 60000;
         const canCancel = ['pending', 'preparing'].includes(order.status) && ageMinutes <= CANCEL_POLICY_MINUTES;
+        const queueText = (['pending', 'preparing'].includes(order.status) && typeof order.queueAhead === 'number')
+            ? `<span style="font-size:0.75rem; background:rgba(234,88,12,0.12); color:var(--primary); padding:2px 8px; border-radius:12px; font-weight:600; margin-left:6px;">🎯 ${order.queueAhead === 0 ? 'Next in line' : '#' + (order.queueAhead + 1) + ' (' + order.queueAhead + ' ahead)'}</span>`
+            : '';
+
         return `
         <div class="order-card" style="flex-direction:row;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
             <div>
-                <h4 style="margin:0">${statusIcons[order.status]||''} ${order.id}</h4>
+                <h4 style="margin:0; display:flex; align-items:center; flex-wrap:wrap;">${statusIcons[order.status]||''} ${order.id} ${queueText}</h4>
                 <p style="margin:0;font-size:0.8rem;">${order.time} • ${formatCurrency(order.total)} • ${order.method}</p>
                 ${order.rating ? `<p style="margin:0;font-size:0.8rem;color:#f59e0b;">${'★'.repeat(order.rating)}${'☆'.repeat(5-order.rating)}</p>` : ''}
             </div>

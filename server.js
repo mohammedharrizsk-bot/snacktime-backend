@@ -533,8 +533,24 @@ app.get('/api/orders', async (req, res) => {
         const fullOrders = [];
 
         for (const order of orders) {
-
             const [items] = await db.query('SELECT * FROM order_items WHERE order_id = ?', [order.id]);
+
+            let queueAhead = 0;
+            let queuePosition = 1;
+            let estMinutes = 3;
+
+            if (['pending', 'preparing'].includes(order.status)) {
+                try {
+                    const [aheadRows] = await db.query(
+                        "SELECT COUNT(*) AS count FROM orders WHERE status IN ('pending', 'preparing') AND placed_at < ? AND vendor_id = ?",
+                        [order.placed_at, order.vendor_id || 1]
+                    );
+                    queueAhead = Number(aheadRows[0]?.count || 0);
+                    queuePosition = queueAhead + 1;
+                    estMinutes = Math.max(3, queuePosition * 3);
+                } catch (e) {}
+            }
+
             fullOrders.push({
                 id:           order.id,
                 customer:     order.customer,
@@ -548,6 +564,9 @@ app.get('/api/orders', async (req, res) => {
                 cancelReason: order.cancel_reason,
                 token:        order.token,
                 paymentId:    order.payment_id,
+                queueAhead:   queueAhead,
+                queuePosition: queuePosition,
+                estMinutes:   estMinutes,
                 items: items.map(item => ({
                     id:    item.item_id,
                     name:  item.name,

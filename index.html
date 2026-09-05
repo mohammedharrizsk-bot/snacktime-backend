@@ -15,7 +15,7 @@
     <meta name="apple-mobile-web-app-title" content="SNACK TIME">
     <link rel="apple-touch-icon" href="snacktime-logo.png">
 
-    <link rel="stylesheet" href="styles.css?v=1788542045556">
+    <link rel="stylesheet" href="styles.css?v=1788547752182">
     <!-- Design System Fonts: Inter (body) + Poppins (headings) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     
@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Translations -->
-    <script src="translations.js?v=1788542045556"></script>
+    <script src="translations.js?v=1788547752182"></script>
 
     <!-- Real-Time Socket.io Engine -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -39,7 +39,7 @@
 
     <!-- PWA Service Worker Registration & Instant Auto-Update -->
     <script>
-    window.SNACKTIME_VERSION = '1.0.9.1788542045556';
+    window.SNACKTIME_VERSION = '1.0.10.1788547752182';
 
     (function () {
       if (!('serviceWorker' in navigator)) return;
@@ -443,6 +443,19 @@
                     <div class="status-step" id="status-ready">✅ Ready</div>
                 </div>
                 <p style="margin-top: 1rem;" id="tracking-status-text"></p>
+                <div id="tracking-queue-info" style="display:none; margin-top:0.75rem; background:linear-gradient(135deg, rgba(234, 88, 12, 0.08), rgba(245, 158, 11, 0.08)); border:1px solid rgba(234, 88, 12, 0.25); border-radius:12px; padding:0.75rem 1rem; align-items:center; justify-content:space-between; gap:0.5rem;">
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <span style="font-size:1.2rem;">🎯</span>
+                        <div>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:600; letter-spacing:0.5px;">Queue Position</div>
+                            <div id="tracking-queue-pos" style="font-weight:700; color:var(--primary); font-size:0.95rem;">#1 in line</div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:600; letter-spacing:0.5px;">Est. Wait</div>
+                        <div id="tracking-wait-time" style="font-weight:700; color:var(--text-primary); font-size:0.95rem;">~4 mins</div>
+                    </div>
+                </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.75rem; background:var(--element-bg); padding:0.75rem 1rem; border-radius:12px; border:1px solid var(--surface-border);">
                     <span style="font-size:0.85rem; color:var(--text-secondary);">Order ID: <strong id="track-order-id" style="color:var(--text-primary);">#---</strong></span>
                     <span style="font-size:0.85rem; color:var(--text-secondary);">Token: <strong id="track-order-token" style="color:var(--primary); font-size:1rem;">—</strong></span>
@@ -618,6 +631,20 @@
                                 <div class="kpi-label">Pending Prep Time</div>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- Kitchen Audio Alert Unlock Banner -->
+                    <div id="vendor-audio-banner" style="display:none; margin-bottom:1.25rem; background:linear-gradient(135deg, #ea580c, #f59e0b); color:#ffffff; border-radius:14px; padding:0.85rem 1.25rem; justify-content:space-between; align-items:center; box-shadow:0 6px 16px rgba(234, 88, 12, 0.25); flex-wrap:wrap; gap:0.75rem;">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <div style="width:40px; height:40px; border-radius:10px; background:rgba(255,255,255,0.2); display:flex; align-items:center; justify-content:center; font-size:1.3rem;">🔔</div>
+                            <div>
+                                <div style="font-weight:700; font-size:0.95rem;">Enable Kitchen Buzzer & Voice Announcer</div>
+                                <div style="font-size:0.8rem; opacity:0.95;">Tap once to unlock browser audio so you never miss new incoming orders on this device.</div>
+                            </div>
+                        </div>
+                        <button class="primary-btn" onclick="unlockVendorAudio()" style="background:#ffffff; color:#ea580c; font-weight:700; border:none; padding:0.6rem 1.2rem; border-radius:10px; cursor:pointer; font-size:0.85rem; box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+                            🔊 Turn Sound ON
+                        </button>
                     </div>
 
                     <!-- ---- ORDERS VIEW ---- -->

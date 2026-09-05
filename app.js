@@ -423,7 +423,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.9.1788542045556';
+const APP_VERSION = '1.0.10.1788547752182';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -587,7 +587,7 @@ async function syncLiveOrdersAndInventory(role) {
                         const newPending = liveOrders.find(o => !prevLiveIds.has(o.id) && (o.status || 'pending').toLowerCase() === 'pending');
                         if (newPending) {
                             triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${newPending.id} - ${newPending.customer || 'Student'} (₹${newPending.total || 0})`);
-                            playOrderAlertSound();
+                            playKitchenBuzzer();
                             announceOrderStatus(newPending, 'pending');
                         }
                     } else if (activeRole === 'student') {
@@ -712,7 +712,7 @@ function startDatabaseSync(role) {
                 renderVendorOrderHistory();
                 updateVendorOrderBadge(liveOrders.length);
                 triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
-                playOrderAlertSound();
+                playKitchenBuzzer();
                 announceOrderStatus(order, 'pending');
             } else if (activeRole === 'student') {
                 renderInlineOrderHistory();
@@ -923,22 +923,91 @@ function showNotification(message, type = 'success') {
         new Notification("SNACK TIME", { body: plainText, icon: "logo.png" });
     }
 }
+let vendorAudioUnlocked = false;
+let globalAudioCtx = null;
+
+function checkVendorAudioStatus() {
+    if (currentUser && currentUser.role === 'vendor') {
+        const banner = $('vendor-audio-banner');
+        if (banner) {
+            banner.style.display = vendorAudioUnlocked ? 'none' : 'flex';
+        }
+    }
+}
+
+function unlockVendorAudio() {
+    try {
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtxClass) {
+            if (!globalAudioCtx) globalAudioCtx = new AudioCtxClass();
+            if (globalAudioCtx.state === 'suspended') {
+                globalAudioCtx.resume();
+            }
+        }
+        vendorAudioUnlocked = true;
+        const banner = $('vendor-audio-banner');
+        if (banner) banner.style.display = 'none';
+
+        // Play loud kitchen buzzer chime
+        playKitchenBuzzer();
+
+        // Warm up speech synthesis
+        if ('speechSynthesis' in window) {
+            const u = new SpeechSynthesisUtterance('Kitchen audio alert active.');
+            u.volume = 0.9;
+            window.speechSynthesis.speak(u);
+        }
+
+        showNotification('🔊 Kitchen buzzer & voice announcer unlocked successfully!', 'success');
+    } catch (e) {
+        console.log('Audio unlock notice:', e);
+    }
+}
+
+function playKitchenBuzzer() {
+    try {
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtxClass) return;
+        const ctx = globalAudioCtx || new AudioCtxClass();
+        if (ctx.state === 'suspended') ctx.resume();
+
+        // 3-Tone Loud Kitchen Chime: C5 (523Hz) -> E5 (659Hz) -> G5 (784Hz) -> C6 (1046Hz)
+        const notes = [523.25, 659.25, 783.99, 1046.50];
+        notes.forEach((freq, idx) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.1);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime + idx * 0.1);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + idx * 0.1 + 0.22);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + idx * 0.1);
+            osc.stop(ctx.currentTime + idx * 0.1 + 0.22);
+        });
+    } catch (e) {
+        playOrderAlertSound();
+    }
+}
+
 function playOrderAlertSound() {
     try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContext) return;
-        const ctx = new AudioContext();
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtxClass) return;
+        const ctx = globalAudioCtx || new AudioCtxClass();
+        if (ctx.state === 'suspended') ctx.resume();
+
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.type = 'sine';
         osc.frequency.setValueAtTime(587.33, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.start();
-        osc.stop(ctx.currentTime + 0.3);
+        osc.stop(ctx.currentTime + 0.35);
     } catch (e) {}
 }
 
@@ -2548,8 +2617,8 @@ function updateTrackingUI(status) {
     };
     const statusMessages = {
         pending: 'Your order is pending confirmation.',
-        preparing: 'The vendor is preparing your order!',
-        ready: 'Your order is READY! Please collect it at the counter.',
+        preparing: 'The kitchen is actively preparing your order!',
+        ready: '🎉 Your order is READY! Please collect it at the counter.',
         completed: 'Order collected. Enjoy your meal! 😋',
         cancelled: 'This order was cancelled.',
         expired: 'Order expired — you did not collect in time.'
@@ -2558,6 +2627,39 @@ function updateTrackingUI(status) {
     if (el) {
         el.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${statusIcons[resolvedStatus] || ''} ${statusMessages[resolvedStatus] || resolvedStatus}</span>`;
         lucide.createIcons();
+    }
+
+    // ── LIVE QUEUE POSITION & WAIT TIME ESTIMATION ────────────────────────────
+    const queueInfoEl = $('tracking-queue-info');
+    const queuePosEl = $('tracking-queue-pos');
+    const waitTimeEl = $('tracking-wait-time');
+
+    if (queueInfoEl && queuePosEl && waitTimeEl) {
+        const s = (resolvedStatus || '').toLowerCase();
+        if (s === 'pending' || s === 'preparing') {
+            queueInfoEl.style.display = 'flex';
+
+            // Filter active orders ahead in queue
+            const activeQueue = (allOrders || []).filter(o =>
+                ['pending', 'preparing'].includes((o.status || '').toLowerCase())
+            );
+
+            // Find index of current order in active queue
+            const myIndex = activeQueue.findIndex(o => o.id === currentOrder.id);
+            const position = myIndex !== -1 ? (myIndex + 1) : 1;
+
+            // Estimated wait time based on position in queue (~3 mins per order ahead)
+            const estMinutes = Math.max(3, position * 3);
+
+            queuePosEl.innerText = position === 1 ? '🎯 Next in line!' : `#${position} in line`;
+            waitTimeEl.innerText = `~${estMinutes} mins`;
+        } else if (s === 'ready') {
+            queueInfoEl.style.display = 'flex';
+            queuePosEl.innerText = '✅ Counter Pickup';
+            waitTimeEl.innerText = 'Ready Now';
+        } else {
+            queueInfoEl.style.display = 'none';
+        }
     }
 }
 
@@ -2763,6 +2865,7 @@ function getItemTranslation(name, lang) {
 }
 
 function renderVendorOrders() {
+    checkVendorAudioStatus();
     const container = $('live-orders-container');
     if (!container) return;
     const searchInput = $('vendor-order-search');

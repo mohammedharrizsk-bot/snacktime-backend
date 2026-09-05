@@ -481,7 +481,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '3.0.0.1788600470149';
+const APP_VERSION = '3.1.0.1788616320249';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -569,21 +569,40 @@ let autoExpireTimers = {};
 const PICKUP_TIMEOUT_MINUTES = 10;
 const CANCEL_POLICY_MINUTES = 2;
 
-// Default Inventory (used as offline fallback)
+// Default Partitioned Inventory across all 5 Vendors (Offline Fallback & Instant Hydration)
 let inventory = [
-    { id: 1,  name: "Samosa",          price: 15,  stock: 50, sold: 12, isSpecial: false },
-    { id: 2,  name: "Cold Coffee",     price: 40,  stock: 30, sold: 5,  isSpecial: false },
-    { id: 3,  name: "Masala Dosa",     price: 60,  stock: 20, sold: 8,  isSpecial: false },
-    { id: 4,  name: "Veg Sandwich",    price: 35,  stock: 40, sold: 15, isSpecial: false },
-    { id: 5,  name: "Tea",             price: 10,  stock: 80, sold: 30, isSpecial: false },
-    { id: 6,  name: "Coffee",          price: 15,  stock: 60, sold: 22, isSpecial: false },
-    { id: 7,  name: "Biscuits",        price: 10,  stock: 100, sold: 45, isSpecial: false },
-    { id: 8,  name: "Bonda",           price: 20,  stock: 40, sold: 18, isSpecial: false },
-    { id: 9,  name: "Sugarcane Juice", price: 30,  stock: 25, sold: 10, isSpecial: false },
-    { id: 10, name: "Sweet Corn",      price: 25,  stock: 35, sold: 14, isSpecial: false },
-    { id: 11, name: "French Fries",    price: 50,  stock: 30, sold: 9,  isSpecial: false },
-    { id: 12, name: "Horlicks",        price: 20,  stock: 50, sold: 0,  isSpecial: false },
-    { id: 13, name: "Boost",           price: 20,  stock: 50, sold: 0,  isSpecial: false }
+    // Stall 1: Main Amenity (vendorId: 1)
+    { id: 1,  name: "Samosa",                  price: 15, stock: 50, sold: 12, vendorId: 1, isSpecial: false },
+    { id: 3,  name: "Masala Dosa",             price: 60, stock: 20, sold: 8,  vendorId: 1, isSpecial: false },
+
+    // Stall 2: Mario Tea Corner (vendorId: 2)
+    { id: 2,  name: "Cold Coffee",             price: 40, stock: 30, sold: 5,  vendorId: 2, isSpecial: false },
+    { id: 5,  name: "Tea",                     price: 10, stock: 80, sold: 30, vendorId: 2, isSpecial: false },
+    { id: 6,  name: "Coffee",                  price: 15, stock: 60, sold: 22, vendorId: 2, isSpecial: false },
+    { id: 7,  name: "Biscuits",                price: 10, stock: 100, sold: 45, vendorId: 2, isSpecial: false },
+    { id: 8,  name: "Bonda",                   price: 20, stock: 40, sold: 18, vendorId: 2, isSpecial: false },
+    { id: 10, name: "Sweet Corn",              price: 25, stock: 35, sold: 14, vendorId: 2, isSpecial: false },
+
+    // Stall 3: Only Cane (vendorId: 3)
+    { id: 9,  name: "Sugarcane Juice",         price: 30, stock: 25, sold: 10, vendorId: 3, isSpecial: false },
+    { id: 12, name: "Horlicks",                price: 20, stock: 50, sold: 0,  vendorId: 3, isSpecial: false },
+    { id: 13, name: "Boost",                   price: 20, stock: 50, sold: 0,  vendorId: 3, isSpecial: false },
+    { id: 14, name: "Lime Cane Juice",         price: 35, stock: 40, sold: 18, vendorId: 3, isSpecial: false },
+    { id: 15, name: "Fresh Orange Juice",      price: 45, stock: 30, sold: 14, vendorId: 3, isSpecial: false },
+
+    // Stall 4: Cafe Corner (vendorId: 4)
+    { id: 4,  name: "Veg Sandwich",            price: 35, stock: 40, sold: 15, vendorId: 4, isSpecial: false },
+    { id: 11, name: "French Fries",            price: 50, stock: 30, sold: 9,  vendorId: 4, isSpecial: false },
+    { id: 17, name: "Cheese Burger",           price: 65, stock: 25, sold: 16, vendorId: 4, isSpecial: false },
+    { id: 19, name: "Veg Pizza",               price: 90, stock: 20, sold: 11, vendorId: 4, isSpecial: false },
+    { id: 20, name: "Peri Peri Fries",         price: 60, stock: 25, sold: 9,  vendorId: 4, isSpecial: false },
+
+    // Stall 5: Stationery Store (vendorId: 5)
+    { id: 21, name: "Long Notebook (192 pgs)", price: 45, stock: 60, sold: 32, vendorId: 5, isSpecial: false },
+    { id: 22, name: "SECE Blue Pen",           price: 10, stock: 150, sold: 85, vendorId: 5, isSpecial: false },
+    { id: 23, name: "SECE Record Note",        price: 60, stock: 40, sold: 28, vendorId: 5, isSpecial: false },
+    { id: 24, name: "Graph Sheet Bundle",      price: 20, stock: 50, sold: 15, vendorId: 5, isSpecial: false },
+    { id: 25, name: "Geometry Box",            price: 85, stock: 25, sold: 6,  vendorId: 5, isSpecial: false }
 ];
 
 function applyDailySpecials() {
@@ -692,7 +711,19 @@ async function syncLiveOrdersAndInventory(role) {
                 const newInvSig = JSON.stringify(rawItems.map(i => i.id + ':' + i.stock + ':' + i.price + ':' + (i.isSpecial ? '1' : '0')));
                 if (newInvSig !== _lastInventorySig) {
                     _lastInventorySig = newInvSig;
-                    inventory = rawItems;
+                    if (activeRole === 'vendor') {
+                        // Merge vendor's items into inventory array to preserve other stalls while keeping live stock accurate
+                        rawItems.forEach(updatedItem => {
+                            const idx = inventory.findIndex(i => Number(i.id) === Number(updatedItem.id));
+                            if (idx !== -1) {
+                                inventory[idx] = { ...inventory[idx], ...updatedItem };
+                            } else {
+                                inventory.push(updatedItem);
+                            }
+                        });
+                    } else {
+                        inventory = rawItems;
+                    }
                     applyDailySpecials();
                     const lang = localStorage.getItem('appLanguage') || 'en';
                     translateAllInventory(lang).then(() => {
@@ -1772,6 +1803,11 @@ function executeLogin(username, role, email = '', id = null, token = null, vendo
     if (token) {
         localStorage.setItem('snacktime_jwt_token', token);
     }
+    // Force fresh data sync on every login/reconnect
+    _lastOrdersSig = '';
+    _lastInventorySig = '';
+    _lastSettingsSig = '';
+
     initNativeNotifications();
     registerFcmToken(username);
     initUniversalWebRTCEngine();
@@ -1824,6 +1860,9 @@ function logout() {
     apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('snacktime_session');
     stopDatabaseSync();
+    _lastOrdersSig = '';
+    _lastInventorySig = '';
+    _lastSettingsSig = '';
     currentUser = null;
     cart = [];
     currentOrder = null;
@@ -2497,7 +2536,7 @@ function initiateRazorpay() {
     }
 
     const tokenNumber = Math.floor(100 + Math.random() * 900);
-    const cartSnapshot = cart.map(i => ({ id: Number(i.id), name: i.name, price: Number(i.price), qty: Number(i.qty) }));
+    const cartSnapshot = cart.map(i => ({ id: Number(i.id), name: i.name, price: Number(i.price), qty: Number(i.qty), vendorId: Number(i.vendorId || i.vendor_id || 1) }));
     const orderId = generateOrderId();
 
     const rzp = new window.Razorpay({
@@ -2604,7 +2643,7 @@ function placeOrderAfterPayment(method, paymentId) {
     const orderPayload = {
         id: customOrderId,
         customer: currentUser ? currentUser.username : 'Guest',
-        items: cart.map(i => ({ id: Number(i.id), name: i.name, price: Number(i.price), qty: Number(i.qty) })),
+        items: cart.map(i => ({ id: Number(i.id), name: i.name, price: Number(i.price), qty: Number(i.qty), vendorId: Number(i.vendorId || i.vendor_id || 1) })),
         total,
         time: new Date().toLocaleTimeString(),
         placedAt: Date.now(),
@@ -3584,7 +3623,16 @@ function renderInventory() {
     const d = (window.translations && window.translations[lang]) || {};
     const lowStockTxt = d.vendor_low_stock || 'LOW STOCK';
     const deleteTxt = d.btn_delete || 'Delete';
-    tbody.innerHTML = inventory.map(item => {
+
+    const myVendorId = (currentUser && currentUser.vendorId) ? Number(currentUser.vendorId) : 1;
+    const vendorItems = inventory.filter(item => Number(item.vendorId || item.vendor_id || 1) === myVendorId);
+
+    if (vendorItems.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:2.5rem;color:var(--text-secondary);font-size:0.95rem;">No items currently listed for this stall. Click <strong>"+ Add Item"</strong> above to add your first product!</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = vendorItems.map(item => {
         const itemReviews = allReviews.filter(r => r.items && r.items.includes(item.name));
         const avgRating = itemReviews.length
             ? (itemReviews.reduce((s, r) => s + r.rating, 0) / itemReviews.length).toFixed(1)
@@ -3623,11 +3671,17 @@ function updateStock(id, newStock) {
     renderMenu();
     showNotification('Stock updated ✅');
 
-    apiFetch(`/api/inventory/${id}/stock`, {
+    apiFetch(`/api/vendor/inventory/${id}/stock`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stock })
-    }).catch(() => {});
+    }).catch(() => {
+        apiFetch(`/api/inventory/${id}/stock`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stock })
+        }).catch(() => {});
+    });
 }
 
 function updatePrice(id, newPrice) {
@@ -3641,11 +3695,17 @@ function updatePrice(id, newPrice) {
     renderMenu();
     showNotification('Price updated ✅');
 
-    apiFetch(`/api/inventory/${id}/price`, {
+    apiFetch(`/api/vendor/inventory/${id}/price`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ price })
-    }).catch(() => {});
+    }).catch(() => {
+        apiFetch(`/api/inventory/${id}/price`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ price })
+        }).catch(() => {});
+    });
 }
 
 function deleteItem(id) {
@@ -3657,9 +3717,13 @@ function deleteItem(id) {
     renderMenu();
     showNotification('Item deleted from menu ✅');
 
-    apiFetch(`/api/inventory/${id}`, {
+    apiFetch(`/api/vendor/inventory/${id}`, {
         method: 'DELETE'
-    }).catch(() => {});
+    }).catch(() => {
+        apiFetch(`/api/inventory/${id}`, {
+            method: 'DELETE'
+        }).catch(() => {});
+    });
 }
 
 function showAddItemModal() { $('add-item-modal').classList.add('active'); }
@@ -3705,6 +3769,7 @@ async function addNewItem() {
     const newId = Date.now();
     const lang = localStorage.getItem('appLanguage') || 'en';
     const translatedName = await translateText(name, lang);
+    const myVendorId = (currentUser && currentUser.vendorId) ? Number(currentUser.vendorId) : 1;
 
     const newItem = {
         id: newId,
@@ -3717,7 +3782,8 @@ async function addNewItem() {
         isSpecial: isOffer,
         discountType,
         discountValue,
-        discountLabel
+        discountLabel,
+        vendorId: myVendorId
     };
 
     inventory.push(newItem);
@@ -3735,11 +3801,22 @@ async function addNewItem() {
     renderMenu();
     showNotification(`${name} added to menu${isOffer ? ' as Daily Offer 🔥' : ''}! 🎉`);
 
-    apiFetch('/api/inventory', {
+    apiFetch('/api/vendor/inventory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, price: finalPrice, stock })
-    }).catch(() => {});
+        body: JSON.stringify({ name, price: finalPrice, stock, vendorId: myVendorId })
+    }).then(res => res.json()).then(created => {
+        if (created && created.id) {
+            newItem.id = created.id;
+            try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
+        }
+    }).catch(() => {
+        apiFetch('/api/inventory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, price: finalPrice, stock, vendorId: myVendorId })
+        }).catch(() => {});
+    });
 }
 
 // ========================= VENDOR REVIEWS =========================
@@ -4119,7 +4196,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if (session) {
         try {
             const savedUser = JSON.parse(session);
-            executeLogin(savedUser.username, savedUser.role, savedUser.email || '');
+            const savedToken = localStorage.getItem('snacktime_jwt_token') || null;
+            executeLogin(savedUser.username, savedUser.role, savedUser.email || '', savedUser.id || null, savedToken, savedUser.vendorId || null, savedUser.shopName || null);
         } catch (e) {
             localStorage.removeItem('snacktime_session');
         }

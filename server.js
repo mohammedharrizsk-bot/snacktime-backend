@@ -558,6 +558,10 @@ app.use('/api', (req, res, next) => {
     if (PUBLIC_API_PATHS.some(p => orig === p || orig.startsWith(p + '/') || sub === p || sub.startsWith(p + '/'))) {
         return next();
     }
+    // Allow public GET for menu / inventory & settings
+    if (req.method === 'GET' && (orig === '/api/inventory' || sub === '/inventory' || orig === '/api/settings' || sub === '/settings')) {
+        return next();
+    }
     authenticate(req, res, next);
 });
 
@@ -565,6 +569,12 @@ app.use('/api', (req, res, next) => {
     const orig = (req.originalUrl || req.url || '').split('?')[0];
     const sub = (req.path || '').split('?')[0];
     if (PUBLIC_API_PATHS.some(p => orig === p || orig.startsWith(p + '/') || sub === p || sub.startsWith(p + '/'))) {
+        return next();
+    }
+    // Requests authenticated via custom Authorization Bearer header are immune to CSRF
+    // (browsers never attach custom Authorization headers cross-origin without JS)
+    const authHeader = (req.headers.authorization || '').trim();
+    if (/^bearer\s+/i.test(authHeader)) {
         return next();
     }
     csrfProtection(req, res, next);
@@ -1066,24 +1076,38 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         // 2. Concurrency Check: Row-level lock inventory and validate stock + identify item vendor_id
         const itemVendorMap = {};
         for (const cartItem of items) {
-            const [rows] = await conn.query(
+            let [rows] = await conn.query(
                 'SELECT id, stock, name, vendor_id FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
             );
-            if (rows.length === 0 || rows[0].stock < cartItem.qty) {
-                await conn.rollback();
-                conn.release();
-                const name = rows.length > 0 ? rows[0].name : 'Item';
-                return res.status(400).json({ message: `"${name}" is out of stock or insufficient quantity available. Please update your cart.` });
+            if (rows.length === 0 && cartItem.name) {
+                const [byName] = await conn.query(
+                    'SELECT id, stock, name, vendor_id FROM inventory WHERE LOWER(name) = LOWER(?) FOR UPDATE', [cartItem.name]
+                );
+                if (byName && byName.length > 0) rows = byName;
             }
-            itemVendorMap[cartItem.id] = Number(rows[0].vendor_id || 1);
+            if (rows.length > 0) {
+                if (rows[0].stock < cartItem.qty) {
+                    await conn.rollback();
+                    conn.release();
+                    const name = rows[0].name || cartItem.name || 'Item';
+                    return res.status(400).json({ message: `"${name}" is out of stock or insufficient quantity available. Please update your cart.` });
+                }
+                cartItem.id = rows[0].id;
+                itemVendorMap[cartItem.id] = Number(rows[0].vendor_id || cartItem.vendorId || 1);
+            } else {
+                const vId = Number(cartItem.vendorId || cartItem.vendor_id || 1);
+                itemVendorMap[cartItem.id] = vId;
+            }
         }
 
         // 3. Atomically deduct inventory stock
         for (const cartItem of items) {
-            await conn.query(
-                'UPDATE inventory SET stock = stock - ?, sold = sold + ? WHERE id = ?',
-                [cartItem.qty, cartItem.qty, cartItem.id]
-            );
+            try {
+                await conn.query(
+                    'UPDATE inventory SET stock = GREATEST(0, stock - ?), sold = sold + ? WHERE id = ?',
+                    [cartItem.qty, cartItem.qty, cartItem.id]
+                );
+            } catch (e) {}
         }
 
         // 4. Partition items by vendor_id

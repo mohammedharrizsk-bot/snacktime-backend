@@ -160,6 +160,18 @@ app.get('/api/csrf-token', csrfProtection, (req, res) => {
     res.json({ csrfToken: req.csrfToken() });
 });
 
+function resolveBackendVendorId(user) {
+    if (!user) return 1;
+    const vId = Number(user.vendorId || user.vendor_id);
+    if (!isNaN(vId) && vId >= 1 && vId <= 5) return vId;
+    const u = (user.username || '').toLowerCase().replace(/[\s\-_]/g, '');
+    if (u.includes('mario') || u.includes('vendor2') || u === '2') return 2;
+    if (u.includes('cane') || u.includes('vendor3') || u === '3') return 3;
+    if (u.includes('cafe') || u.includes('vendor4') || u === '4') return 4;
+    if (u.includes('stationery') || u.includes('vendor5') || u === '5') return 5;
+    return 1;
+}
+
 // JWT authentication middleware
 function authenticate(req, res, next) {
     const token =
@@ -168,8 +180,8 @@ function authenticate(req, res, next) {
     if (!token) return res.status(401).json({ message: 'Authentication required.' });
     try {
         req.user = jwt.verify(token, JWT_SECRET);
-        if (req.user.role === 'vendor' && !req.user.vendorId) {
-            req.user.vendorId = Number(req.user.id || 1);
+        if (req.user.role === 'vendor') {
+            req.user.vendorId = resolveBackendVendorId(req.user);
         }
         next();
     } catch (_) {
@@ -192,9 +204,7 @@ function authorizeVendor(req, res, next) {
     if (!req.user) return res.status(401).json({ message: 'Unauthenticated.' });
     if (req.user.role !== 'vendor')
         return res.status(403).json({ message: 'Forbidden: Vendor access required.' });
-    if (!req.user.vendorId) {
-        req.user.vendorId = Number(req.user.id || 1);
-    }
+    req.user.vendorId = resolveBackendVendorId(req.user);
     next();
 }
 
@@ -219,8 +229,8 @@ app.post('/api/register', authLimiter, async (req, res) => {
     if (role === 'student') {
         if (!email)
             return res.status(400).json({ message: 'Email is required for student registration.' });
-        if (!email.endsWith('@sece.ac.in'))
-            return res.status(400).json({ message: 'Please use your college email (@sece.ac.in).' });
+        if (!email.includes('@') || !email.includes('.'))
+            return res.status(400).json({ message: 'Please enter a valid email address.' });
     }
 
     const targetEmail = email
@@ -536,16 +546,27 @@ app.get('/api/vendors', async (req, res) => {
 const PUBLIC_API_PATHS = [
     '/api/health', '/api/csrf-token', '/api/login', '/api/logout',
     '/api/register', '/api/forgot-password', '/api/reset-password-confirm',
-    '/api/vendors'
+    '/api/vendors',
+    '/health', '/csrf-token', '/login', '/logout',
+    '/register', '/forgot-password', '/reset-password-confirm',
+    '/vendors'
 ];
+
 app.use('/api', (req, res, next) => {
-    const path = req.path;
-    if (PUBLIC_API_PATHS.some(p => path === p || path.startsWith(p + '/'))) return next();
+    const orig = (req.originalUrl || req.url || '').split('?')[0];
+    const sub = (req.path || '').split('?')[0];
+    if (PUBLIC_API_PATHS.some(p => orig === p || orig.startsWith(p + '/') || sub === p || sub.startsWith(p + '/'))) {
+        return next();
+    }
     authenticate(req, res, next);
 });
+
 app.use('/api', (req, res, next) => {
-    const path = req.path;
-    if (PUBLIC_API_PATHS.some(p => path === p || path.startsWith(p + '/'))) return next();
+    const orig = (req.originalUrl || req.url || '').split('?')[0];
+    const sub = (req.path || '').split('?')[0];
+    if (PUBLIC_API_PATHS.some(p => orig === p || orig.startsWith(p + '/') || sub === p || sub.startsWith(p + '/'))) {
+        return next();
+    }
     csrfProtection(req, res, next);
 });
 

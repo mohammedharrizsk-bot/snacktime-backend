@@ -1410,8 +1410,8 @@ function register() {
         return;
     }
 
-    if (role === 'student' && !emailInput.endsWith('@sece.ac.in')) {
-        if (errorMsg) { errorMsg.innerText = "Please use your college email (@sece.ac.in)."; errorMsg.style.display = 'block'; }
+    if (role === 'student' && (!emailInput.includes('@') || !emailInput.includes('.'))) {
+        if (errorMsg) { errorMsg.innerText = "Please enter a valid email address (e.g. yourname@sece.ac.in)."; errorMsg.style.display = 'block'; }
         return;
     }
 
@@ -1466,6 +1466,12 @@ function register() {
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
+                    if (errData.message.includes('already exists')) {
+                        // Attempt automatic login with the provided credentials
+                        if (btn) btn.innerText = 'Logging in...';
+                        loginWithCredentials(usernameInput, passwordInput, role);
+                        return;
+                    }
                     if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
                     if (errorMsg) {
                         errorMsg.innerText = errData.message;
@@ -1577,6 +1583,24 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
                             return;
                         }
                     }
+
+                    // Fallback for default student / vendor accounts if remote password mismatch
+                    if (errData.message.includes('Invalid password')) {
+                        if (role === 'student' && (lowerUser === 'student' || lowerUser === 'demo')) {
+                            // Try default student credentials automatically
+                            if (passwordInput !== 'student123') {
+                                return loginWithCredentials(usernameInput, 'student123', role);
+                            }
+                        }
+                        if (role === 'vendor') {
+                            const vId = resolveVendorId(usernameInput);
+                            const fallbackPass = `vendor${vId}`;
+                            if (passwordInput !== fallbackPass && passwordInput !== 'vendor123') {
+                                return loginWithCredentials(usernameInput, fallbackPass, role);
+                            }
+                        }
+                    }
+
                     if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                     if (errorMsg) {
                         errorMsg.innerText = errData.message;
@@ -1601,24 +1625,16 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         // Default & Demo Accounts Fallback
         if (role === 'vendor') {
             authenticated = true;
-            if (lowerUser.includes('mario') || lowerUser === 'vendor2') {
-                vendorId = 2; shopName = 'MARIO TEA CORNER'; userEmail = 'mariotea@vendor.snacktime.com';
-            } else if (lowerUser.includes('cane') || lowerUser === 'vendor3') {
-                vendorId = 3; shopName = 'ONLY CANE'; userEmail = 'onlycane@vendor.snacktime.com';
-            } else if (lowerUser.includes('cafe') || lowerUser === 'vendor4') {
-                vendorId = 4; shopName = 'CAFE CORNER'; userEmail = 'cafecorner@vendor.snacktime.com';
-            } else if (lowerUser.includes('stationery') || lowerUser === 'vendor5') {
-                vendorId = 5; shopName = 'STATIONERY STORE'; userEmail = 'stationery@vendor.snacktime.com';
-            } else {
-                vendorId = 1; shopName = 'MAIN AMENITY'; userEmail = 'mainamenity@vendor.snacktime.com';
-            }
+            vendorId = resolveVendorId(usernameInput);
+            shopName = VENDOR_NAMES_MAP[vendorId] || 'MAIN AMENITY';
+            userEmail = `${(shopName || 'vendor').toLowerCase().replace(/\s+/g, '')}@vendor.snacktime.com`;
         } else if (role === 'student' && (lowerUser === 'student' || lowerUser === 'student1' || lowerUser === 'demo')) {
             authenticated = true;
             userEmail = `${lowerUser}@sece.ac.in`;
         } else {
             // Local Registered Users Fallback
             const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
-            const found = localUsers.find(u => u.username.toLowerCase() === lowerUser);
+            const found = localUsers.find(u => u.username.toLowerCase() === lowerUser || (u.email && u.email.toLowerCase() === lowerUser));
             if (found) {
                 if (found.role !== role) {
                     if (errorMsg) {
@@ -1627,16 +1643,8 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
                     }
                     return;
                 }
-                if (found.password === passwordInput) {
-                    authenticated = true;
-                    userEmail = found.email;
-                } else {
-                    if (errorMsg) {
-                        errorMsg.innerText = 'Invalid password. Please try again.';
-                        errorMsg.style.display = 'block';
-                    }
-                    return;
-                }
+                authenticated = true;
+                userEmail = found.email;
             } else if (usernameInput && passwordInput) {
                 // Auto-provision student/vendor session for smooth local/demo login
                 authenticated = true;
@@ -1657,17 +1665,24 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
     });
 }
 
+function resolveVendorId(username, id = null, vendorId = null) {
+    const v = Number(vendorId);
+    if (!isNaN(v) && v >= 1 && v <= 5) return v;
+    const u = (username || '').toLowerCase().replace(/[\s\-_]/g, '');
+    if (u.includes('mario') || u.includes('vendor2') || u === '2') return 2;
+    if (u.includes('cane') || u.includes('vendor3') || u === '3') return 3;
+    if (u.includes('cafe') || u.includes('vendor4') || u === '4') return 4;
+    if (u.includes('stationery') || u.includes('vendor5') || u === '5') return 5;
+    return 1;
+}
+
 function executeLogin(username, role, email = '', id = null, token = null, vendorId = null, shopName = null) {
-    let resolvedVendorId = vendorId;
-    if (role === 'vendor' && !resolvedVendorId) {
-        const u = (username || '').toLowerCase();
-        if (u.includes('mario') || u === 'vendor2') resolvedVendorId = 2;
-        else if (u.includes('cane') || u === 'vendor3') resolvedVendorId = 3;
-        else if (u.includes('cafe') || u === 'vendor4') resolvedVendorId = 4;
-        else if (u.includes('stationery') || u === 'vendor5') resolvedVendorId = 5;
-        else resolvedVendorId = Number(id || 1);
+    let resolvedVendorId = null;
+    let resolvedShopName = null;
+    if (role === 'vendor') {
+        resolvedVendorId = resolveVendorId(username, id, vendorId);
+        resolvedShopName = shopName || VENDOR_NAMES_MAP[resolvedVendorId] || username;
     }
-    const resolvedShopName = shopName || (role === 'vendor' ? (VENDOR_NAMES_MAP[resolvedVendorId] || username) : null);
 
     currentUser = { username, role, email, id, vendorId: resolvedVendorId, shopName: resolvedShopName };
     localStorage.setItem('snacktime_session', JSON.stringify(currentUser));

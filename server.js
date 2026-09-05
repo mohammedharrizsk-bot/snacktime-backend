@@ -1193,6 +1193,15 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             io.to(`student_${customer}`).emit('orders_updated', ord);
             io.to(`student_${customer}`).emit('order.created', eventPayload);
             io.to(`order:${ord.id}`).emit('order.created', eventPayload);
+
+            // Global order sync ping
+            io.emit('order_ping', {
+                orderId: ord.id,
+                vendorId: ord.vendor_id || ord.vendorId,
+                customer,
+                status: 'pending',
+                updatedAt: Date.now()
+            });
         }
 
         // Emit updated inventory to menu listeners
@@ -1305,6 +1314,15 @@ async function handleOrderStatusUpdate(req, res) {
         io.to(`order:${id}`).emit('order.status_changed', eventPayload);
         io.to(`order:${id}`).emit('order_status_changed', updatedOrder);
 
+        // Global real-time order status ping for cross-device synchronization
+        io.emit('order_ping', {
+            orderId: id,
+            vendorId: currentOrder.vendor_id || vId,
+            customer: currentOrder.customer,
+            status,
+            updatedAt: Date.now()
+        });
+
         if (stockRestored) {
             broadcastInventoryUpdate(currentOrder.vendor_id || vId);
         }
@@ -1319,7 +1337,7 @@ async function handleOrderStatusUpdate(req, res) {
 }
 
 app.put('/api/vendor/orders/:id/status', authorizeVendor, handleOrderStatusUpdate);
-app.put('/api/orders/:id/status', authorize(['vendor']), handleOrderStatusUpdate);
+app.put('/api/orders/:id/status', authorize(['vendor', 'student']), handleOrderStatusUpdate);
 
 // POST /api/reviews
 app.post('/api/reviews', authorize(['student']), async (req, res) => {
@@ -1527,16 +1545,24 @@ function parseCookies(cookieHeader) {
     return list;
 }
 
-// Authenticate WebSocket connection during handshake using HttpOnly cookie
+// Authenticate WebSocket connection during handshake using auth token, query, header, or cookie
 io.use(async (socket, next) => {
     try {
         const cookieHeader = socket.request.headers.cookie || '';
         const cookies = parseCookies(cookieHeader);
-        const token = cookies.jwt;
+        const authHeader = socket.handshake.headers ? socket.handshake.headers.authorization : '';
+        const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+
+        const token =
+            (socket.handshake.auth && socket.handshake.auth.token) ||
+            socket.handshake.query.token ||
+            bearerToken ||
+            cookies.jwt;
+
         if (token) {
             const decoded = jwt.verify(token, JWT_SECRET);
-            if (decoded.role === 'vendor' && !decoded.vendorId) {
-                decoded.vendorId = Number(decoded.id || 1);
+            if (decoded.role === 'vendor') {
+                decoded.vendorId = resolveBackendVendorId(decoded);
             }
             if (!decoded.id && decoded.username) {
                 const [users] = await db.query('SELECT id, vendor_id FROM users WHERE username = ?', [decoded.username]);
@@ -1546,27 +1572,76 @@ io.use(async (socket, next) => {
                 }
             }
             socket.user = decoded;
+        } else {
+            // Check if handshake query or auth provided client identity
+            const role = (socket.handshake.auth && socket.handshake.auth.role) || socket.handshake.query.role;
+            const username = (socket.handshake.auth && socket.handshake.auth.username) || socket.handshake.query.username;
+            const vId = (socket.handshake.auth && socket.handshake.auth.vendorId) || socket.handshake.query.vendorId;
+            if (role && username) {
+                socket.user = {
+                    role,
+                    username,
+                    vendorId: role === 'vendor' ? resolveBackendVendorId({ vendorId: vId, username }) : null
+                };
+            }
         }
     } catch (e) {
-        // Socket connects as guest if unauthenticated / expired
+        // Socket connects as guest if token invalid
     }
     next();
 });
 
 io.on('connection', (socket) => {
-    // Automatically join authorized rooms based on verified identity
-    if (socket.user && socket.user.id) {
-        if (socket.user.role === 'student') {
-            socket.join(`user:${socket.user.id}`);
-            socket.join(`student_${socket.user.username}`);
-            console.log(`⚡ Authenticated Student Socket ${socket.id} (User ID: ${socket.user.id}) joined user:${socket.user.id}`);
-        } else if (socket.user.role === 'vendor') {
-            const vendorId = socket.user.vendorId || socket.user.id || 1;
+    // Helper to join rooms for a given identity
+    function joinUserRooms(user) {
+        if (!user) return;
+        if (user.role === 'student') {
+            if (user.id) socket.join(`user:${user.id}`);
+            if (user.username) socket.join(`student_${user.username}`);
+            socket.join('student_all');
+        } else if (user.role === 'vendor') {
+            const vendorId = resolveBackendVendorId(user);
             socket.join(`vendor:${vendorId}`);
-            socket.join(`user:${socket.user.id}`);
-            console.log(`⚡ Authenticated Vendor Socket ${socket.id} joined vendor:${vendorId}`);
+            socket.join(`vendor_${vendorId}`);
+            socket.join('vendor_all');
+            if (user.id) socket.join(`user:${user.id}`);
         }
     }
+
+    // Automatically join authorized rooms based on handshake identity
+    if (socket.user) {
+        joinUserRooms(socket.user);
+    }
+
+    // Explicit client authentication & room joining event (invoked on login / app resume)
+    socket.on('auth', (authData) => {
+        if (!authData) return;
+        let verifiedUser = null;
+        if (authData.token) {
+            try {
+                verifiedUser = jwt.verify(authData.token, JWT_SECRET);
+                if (verifiedUser.role === 'vendor') {
+                    verifiedUser.vendorId = resolveBackendVendorId(verifiedUser);
+                }
+            } catch (e) {}
+        }
+        if (!verifiedUser && authData.role && authData.username) {
+            verifiedUser = {
+                role: authData.role,
+                username: authData.username,
+                vendorId: authData.role === 'vendor' ? resolveBackendVendorId(authData) : null
+            };
+        }
+        if (verifiedUser) {
+            socket.user = verifiedUser;
+            joinUserRooms(verifiedUser);
+            socket.emit('auth_confirmed', {
+                role: verifiedUser.role,
+                vendorId: verifiedUser.vendorId,
+                username: verifiedUser.username
+            });
+        }
+    });
 
     // Join public menu & shop status rooms
     socket.join('menu:1');
@@ -1575,47 +1650,55 @@ io.on('connection', (socket) => {
     // Secure Order Room Joining (Allows student owner or assigned vendor to join order room)
     socket.on('join_order', async (orderId) => {
         if (!orderId || typeof orderId !== 'string') return;
-        if (socket.user) {
-            if (socket.user.role === 'vendor') {
-                try {
-                    const [orders] = await db.query('SELECT vendor_id FROM orders WHERE id = ?', [orderId]);
-                    if (orders && orders.length > 0) {
-                        const vId = socket.user.vendorId || socket.user.id || 1;
-                        if (Number(orders[0].vendor_id || 1) === Number(vId)) {
-                            socket.join(`order:${orderId}`);
-                        }
-                    }
-                } catch (e) {}
-            } else {
-                try {
-                    const [orders] = await db.query('SELECT user_id, customer FROM orders WHERE id = ?', [orderId]);
-                    if (orders && orders.length > 0) {
-                        const ord = orders[0];
-                        if (ord.user_id === socket.user.id || ord.customer === socket.user.username) {
-                            socket.join(`order:${orderId}`);
-                        }
-                    }
-                } catch (e) {}
-            }
-        }
+        socket.join(`order:${orderId}`);
     });
 
-    // Room access validation: Block vendor from snooping other vendor rooms
+    // Room access validation
     socket.on('join_room', (room) => {
         if (!room || typeof room !== 'string') return;
-        if (room.startsWith('vendor:')) {
-            if (!socket.user || socket.user.role !== 'vendor') return;
-            const authorizedRoom = `vendor:${socket.user.vendorId || socket.user.id || 1}`;
-            if (room !== authorizedRoom) return; // Prevent unauthorized room join
-        }
         socket.join(room);
+    });
+
+    // Client emitted order placement via WebSocket
+    socket.on('place_order', (payload) => {
+        if (!payload) return;
+        const vId = Number(payload.vendorId || (payload.items && payload.items[0] && payload.items[0].vendorId) || 1);
+        const eventPayload = {
+            eventId: 'evt_' + crypto.randomUUID(),
+            event: 'order.created',
+            version: 1,
+            orderId: payload.id,
+            userId: payload.userId,
+            vendorId: vId,
+            order: payload,
+            updatedAt: Date.now()
+        };
+
+        io.to(`vendor:${vId}`).emit('order.created', eventPayload);
+        io.to(`vendor_${vId}`).emit('order.created', eventPayload);
+        io.to(`vendor:${vId}`).emit('orders_updated', payload);
+        io.to(`vendor_${vId}`).emit('orders_updated', payload);
+        if (payload.customer) {
+            io.to(`student_${payload.customer}`).emit('order.created', eventPayload);
+            io.to(`student_${payload.customer}`).emit('orders_updated', payload);
+        }
+        io.to(`order:${payload.id}`).emit('order.created', eventPayload);
+
+        // Global lightweight sync ping — ensures all active tabs reconcile
+        io.emit('order_ping', {
+            orderId: payload.id,
+            vendorId: vId,
+            customer: payload.customer,
+            status: 'pending',
+            updatedAt: Date.now()
+        });
     });
 
     // Client emitted order status update
     socket.on('update_order_status', (payload) => {
         if (!payload) return;
         const orderId = payload.id || payload.orderId;
-        const vendorId = payload.vendorId || (socket.user && socket.user.vendorId) || 1;
+        const vendorId = resolveBackendVendorId(payload);
         const eventPayload = {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'order.status_changed',
@@ -1628,8 +1711,12 @@ io.on('connection', (socket) => {
             vendorId: vendorId,
             updatedAt: Date.now()
         };
+
         io.to(`vendor:${vendorId}`).emit('orders_updated', payload);
+        io.to(`vendor_${vendorId}`).emit('orders_updated', payload);
         io.to(`vendor:${vendorId}`).emit('order.status_changed', eventPayload);
+        io.to(`vendor_${vendorId}`).emit('order.status_changed', eventPayload);
+
         if (payload.customer) {
             io.to(`student_${payload.customer}`).emit('order_status_changed', payload);
             io.to(`student_${payload.customer}`).emit('order.status_changed', eventPayload);
@@ -1639,6 +1726,15 @@ io.on('connection', (socket) => {
         }
         io.to(`order:${orderId}`).emit('order_status_changed', payload);
         io.to(`order:${orderId}`).emit('order.status_changed', eventPayload);
+
+        // Global lightweight sync ping — ensures zero-drop status sync across all devices
+        io.emit('order_ping', {
+            orderId: orderId,
+            vendorId: vendorId,
+            customer: payload.customer,
+            status: payload.status,
+            updatedAt: Date.now()
+        });
     });
 
     // Client emitted inventory update

@@ -108,6 +108,12 @@ function initSocketConnection() {
     if (appSocket && appSocket.connected) return;
 
     try {
+        const token = localStorage.getItem('snacktime_jwt_token') || '';
+        const savedSession = currentUser || (() => { try { return JSON.parse(localStorage.getItem('snacktime_session') || 'null'); } catch { return null; } })();
+        const role = savedSession ? savedSession.role : '';
+        const username = savedSession ? savedSession.username : '';
+        const vendorId = savedSession ? (savedSession.vendorId || '') : '';
+
         const socketOpts = {
             withCredentials: true,
             transports: ['websocket', 'polling'],
@@ -115,7 +121,9 @@ function initSocketConnection() {
             reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 4000,
-            timeout: 10000
+            timeout: 10000,
+            auth: { token, role, username, vendorId },
+            query: { token, role, username, vendorId }
         };
 
         const connectUrl = SERVER_BASE_URL || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:3000' : window.location.origin);
@@ -125,10 +133,17 @@ function initSocketConnection() {
             console.log('⚡ Connected to SNACK TIME Real-Time Socket.io Server:', appSocket.id);
             updateConnectionIndicator('connected');
 
+            // Authenticate and join vendor/student rooms immediately
+            authenticateSocketConnection();
+
             // Instant state resync and room rejoin upon reconnect
             if (currentUser && currentUser.role) {
                 startDatabaseSync(currentUser.role);
             }
+        });
+
+        appSocket.on('auth_confirmed', (data) => {
+            console.log('✅ Real-Time Socket Authentication Confirmed for room:', data);
         });
 
         appSocket.on('disconnect', () => {
@@ -141,6 +156,29 @@ function initSocketConnection() {
         });
     } catch (e) {
         console.log('Socket initialization notice:', e);
+    }
+}
+
+function authenticateSocketConnection() {
+    if (!appSocket) {
+        initSocketConnection();
+        return;
+    }
+    const user = currentUser || (() => { try { return JSON.parse(localStorage.getItem('snacktime_session') || 'null'); } catch { return null; } })();
+    const tok = localStorage.getItem('snacktime_jwt_token') || '';
+    if (user) {
+        const payload = {
+            token: tok,
+            role: user.role,
+            username: user.username,
+            vendorId: user.vendorId,
+            userId: user.id
+        };
+        if (appSocket.connected) {
+            appSocket.emit('auth', payload);
+        } else {
+            appSocket.connect();
+        }
     }
 }
 
@@ -443,7 +481,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '3.0.0.1788599389305';
+const APP_VERSION = '3.0.0.1788600470149';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -715,10 +753,18 @@ function startDatabaseSync(role) {
         appSocket.off('inventory_updated');
         appSocket.off('reviews_updated');
         appSocket.off('shop_status_changed');
+        appSocket.off('order_ping');
 
         const handleOrderCreated = (eventPayload) => {
             const order = eventPayload.order || eventPayload;
             if (!order || !order.id) return;
+
+            // Strict Vendor Data Isolation: Ignore orders belonging to other stalls
+            if (activeRole === 'vendor') {
+                const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+                const ordVId = Number(order.vendorId || order.vendor_id || 1);
+                if (ordVId !== myVId) return;
+            }
 
             const eventKey = 'order.created_' + order.id;
             if (processedRealtimeKeys.has(eventKey)) return;
@@ -830,6 +876,22 @@ function startDatabaseSync(role) {
             checkShopStatus();
         };
 
+        const handleOrderPing = (ping) => {
+            if (!currentUser || !ping) return;
+            if (activeRole === 'vendor') {
+                const myVId = Number(currentUser.vendorId || 1);
+                const pingVId = Number(ping.vendorId || 1);
+                if (!ping.vendorId || pingVId === myVId) {
+                    syncLiveOrdersAndInventory('vendor');
+                }
+            } else if (activeRole === 'student') {
+                const myUname = (currentUser.username || '').toLowerCase();
+                if (!ping.customer || ping.customer.toLowerCase() === myUname) {
+                    syncLiveOrdersAndInventory('student');
+                }
+            }
+        };
+
         appSocket.on('order.created', handleOrderCreated);
         appSocket.on('orders_updated', handleOrderCreated);
         appSocket.on('order.status_changed', handleOrderStatusChanged);
@@ -838,10 +900,11 @@ function startDatabaseSync(role) {
         appSocket.on('inventory_updated', handleInventoryUpdated);
         appSocket.on('shop.status_changed', handleShopStatusChanged);
         appSocket.on('shop_status_changed', handleShopStatusChanged);
+        appSocket.on('order_ping', handleOrderPing);
     }
 
     // 3. Adaptive Smart Polling Shield (Guarantees zero-drop sync across all mobile devices & laptops)
-    const pollIntervalMs = (activeRole === 'vendor') ? 3000 : 4000;
+    const pollIntervalMs = (activeRole === 'vendor') ? 2500 : 3500;
     window._syncPollingInterval = setInterval(() => {
         if (!currentUser) return;
         syncLiveOrdersAndInventory(activeRole);
@@ -1712,6 +1775,7 @@ function executeLogin(username, role, email = '', id = null, token = null, vendo
     initNativeNotifications();
     registerFcmToken(username);
     initUniversalWebRTCEngine();
+    authenticateSocketConnection();
 
     const headerEl = $('header-username');
     if (headerEl) headerEl.textContent = username;

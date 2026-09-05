@@ -219,19 +219,20 @@ const VENDOR_SHOPS = {
 app.post('/api/register', authLimiter, async (req, res) => {
     const { username, email, password, role } = req.body;
 
-    if (!username || !password || !role)
-        return res.status(400).json({ message: 'Username, password and role are required.' });
+    if (!username || !password)
+        return res.status(400).json({ message: 'Username and password are required.' });
 
-    if (role === 'student') {
-        if (!email)
-            return res.status(400).json({ message: 'Email is required for student registration.' });
-        if (!email.includes('@') || !email.includes('.'))
-            return res.status(400).json({ message: 'Please enter a valid email address.' });
+    if (role === 'vendor') {
+        return res.status(403).json({ message: 'Vendor accounts cannot be registered publicly. Please contact administration.' });
     }
 
-    const targetEmail = email
-        ? email.toLowerCase().trim()
-        : `${username.toLowerCase().trim()}@vendor.snacktime.com`;
+    const assignedRole = 'student';
+    if (!email)
+        return res.status(400).json({ message: 'Email is required for student registration.' });
+    if (!email.includes('@') || !email.includes('.'))
+        return res.status(400).json({ message: 'Please enter a valid email address.' });
+
+    const targetEmail = email.toLowerCase().trim();
 
     try {
         const [existingEmail] = await db.query('SELECT id FROM users WHERE LOWER(email) = ?', [targetEmail]);
@@ -249,12 +250,12 @@ app.post('/api/register', authLimiter, async (req, res) => {
 
         const [insertRes] = await db.query(
             'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            [username.trim(), targetEmail, passwordHash, role]
+            [username.trim(), targetEmail, passwordHash, assignedRole]
         );
 
         const newId = insertRes ? (insertRes.insertId || Date.now()) : Date.now();
         const token = jwt.sign(
-            { id: newId, username: username.trim(), role },
+            { id: newId, username: username.trim(), role: assignedRole },
             JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -270,7 +271,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
             id: newId,
             username: username.trim(),
             email: targetEmail,
-            role,
+            role: assignedRole,
             token
         });
     } catch (err) {
@@ -1069,15 +1070,15 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             return res.status(200).json({ ...existingOrders[0], message: 'Order already exists.' });
         }
 
-        // 2. Concurrency Check: Row-level lock inventory and validate stock + identify item vendor_id
+        // 2. Concurrency Check: Row-level lock inventory, validate stock, and fetch authoritative price
         const itemVendorMap = {};
         for (const cartItem of items) {
             let [rows] = await conn.query(
-                'SELECT id, stock, name, vendor_id FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
+                'SELECT id, stock, name, price, vendor_id FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
             );
             if (rows.length === 0 && cartItem.name) {
                 const [byName] = await conn.query(
-                    'SELECT id, stock, name, vendor_id FROM inventory WHERE LOWER(name) = LOWER(?) FOR UPDATE', [cartItem.name]
+                    'SELECT id, stock, name, price, vendor_id FROM inventory WHERE LOWER(name) = LOWER(?) FOR UPDATE', [cartItem.name]
                 );
                 if (byName && byName.length > 0) rows = byName;
             }
@@ -1089,6 +1090,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                     return res.status(400).json({ message: `"${name}" is out of stock or insufficient quantity available. Please update your cart.` });
                 }
                 cartItem.id = rows[0].id;
+                cartItem.name = rows[0].name || cartItem.name;
+                // Securely use authoritative database price if present
+                if (rows[0].price !== undefined && rows[0].price !== null) {
+                    cartItem.price = Number(rows[0].price);
+                }
                 itemVendorMap[cartItem.id] = Number(rows[0].vendor_id || cartItem.vendorId || 1);
             } else {
                 const vId = Number(cartItem.vendorId || cartItem.vendor_id || 1);
@@ -1106,7 +1112,8 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             } catch (e) {}
         }
 
-        // 4. Partition items by vendor_id
+        // 4. Partition items by vendor_id and compute authoritative totals
+        let calculatedGrandTotal = 0;
         const vendorGroups = {};
         for (const cartItem of items) {
             const vId = itemVendorMap[cartItem.id] || 1;
@@ -1114,7 +1121,27 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 vendorGroups[vId] = { vendorId: vId, items: [], total: 0 };
             }
             vendorGroups[vId].items.push(cartItem);
-            vendorGroups[vId].total += (Number(cartItem.price) * Number(cartItem.qty));
+            const lineTotal = Number(cartItem.price) * Number(cartItem.qty);
+            vendorGroups[vId].total += lineTotal;
+            calculatedGrandTotal += lineTotal;
+        }
+
+        const secureGrandTotal = calculatedGrandTotal > 0 ? calculatedGrandTotal : Number(total);
+
+        // Helper: Generate daily sequential token per stall (resets every morning, avoiding counter collisions)
+        async function getNextVendorToken(targetVendorId, fallbackToken) {
+            try {
+                const startOfDay = new Date();
+                startOfDay.setHours(0, 0, 0, 0);
+                const [maxRows] = await conn.query(
+                    'SELECT MAX(token) as max_token FROM orders WHERE vendor_id = ? AND placed_at >= ?',
+                    [targetVendorId, startOfDay.getTime()]
+                );
+                const maxVal = (maxRows && maxRows[0] && maxRows[0].max_token) ? Number(maxRows[0].max_token) : 100;
+                return Math.max(101, maxVal + 1);
+            } catch (e) {
+                return fallbackToken ? Number(fallbackToken) : Math.floor(100 + Math.random() * 900);
+            }
         }
 
         const vendorIdKeys = Object.keys(vendorGroups).map(Number);
@@ -1124,9 +1151,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         // If all items belong to 1 vendor
         if (vendorIdKeys.length === 1) {
             const vId = vendorIdKeys[0];
+            const assignedToken = await getNextVendorToken(vId, token);
+
             await conn.query(
                 'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [id, studentUserId, vId, null, customer, total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
+                [id, studentUserId, vId, null, customer, secureGrandTotal, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
             );
 
             for (const cartItem of items) {
@@ -1141,13 +1170,13 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 userId: studentUserId,
                 vendorId: vId,
                 customer,
-                total,
+                total: secureGrandTotal,
                 status: orderStatus,
                 time,
                 placedAt,
                 method,
                 items,
-                token,
+                token: assignedToken,
                 paymentId,
                 version: 1
             });
@@ -1157,10 +1186,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 const vId = vendorIdKeys[i];
                 const subOrderId = `${id}-V${vId}`;
                 const group = vendorGroups[vId];
+                const assignedToken = await getNextVendorToken(vId, token);
 
                 await conn.query(
                     'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
+                    [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
                 );
 
                 for (const cartItem of group.items) {
@@ -1182,7 +1212,7 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                     placedAt,
                     method,
                     items: group.items,
-                    token,
+                    token: assignedToken,
                     paymentId,
                     version: 1
                 });
@@ -1367,8 +1397,19 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
         return res.status(403).json({ message: 'You can only review your own orders.' });
 
     try {
-        const [orders] = await db.query('SELECT vendor_id FROM orders WHERE id = ?', [orderId]);
-        const vendorId = orders && orders.length > 0 ? Number(orders[0].vendor_id || 1) : 1;
+        const [orders] = await db.query('SELECT vendor_id, status FROM orders WHERE id = ?', [orderId]);
+        if (!orders || orders.length === 0) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        if (orders[0].status !== 'completed') {
+            return res.status(400).json({ message: 'Only completed orders can be reviewed.' });
+        }
+        const [existingReview] = await db.query('SELECT id FROM reviews WHERE order_id = ?', [orderId]);
+        if (existingReview && existingReview.length > 0) {
+            return res.status(400).json({ message: 'You have already submitted a review for this order.' });
+        }
+
+        const vendorId = Number(orders[0].vendor_id || 1);
 
         await db.query(
             'INSERT INTO reviews (order_id, vendor_id, customer, items, rating, feedback, time) VALUES (?, ?, ?, ?, ?, ?, ?)',

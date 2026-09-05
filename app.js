@@ -481,7 +481,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '3.1.0.1788616320249';
+const APP_VERSION = '3.1.0.1788617614857';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -847,12 +847,13 @@ function startDatabaseSync(role) {
             liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
             if (activeRole === 'student') {
+                const matchesCurrentOrder = currentOrder && (currentOrder.id === orderId || orderId.startsWith(currentOrder.id + '-') || (currentOrder.id && currentOrder.id.startsWith(orderId)));
                 const isMyOrder = (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
                                   (currentUser && eventPayload.customer === currentUser.username) ||
-                                  (currentOrder && currentOrder.id === orderId);
+                                  matchesCurrentOrder;
 
                 if (isMyOrder) {
-                    if (currentOrder && currentOrder.id === orderId) {
+                    if (matchesCurrentOrder) {
                         currentOrder.status = newStatus;
                         currentOrder.version = eventVersion;
                         if (eventPayload.token) currentOrder.token = eventPayload.token;

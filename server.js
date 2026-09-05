@@ -152,7 +152,7 @@ app.use(express.static(__dirname));
 
 // Public health & keep-alive endpoint
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now() });
+    res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now(), version: process.env.DEPLOY_VERSION || 'dev' });
 });
 
 // CSRF token endpoint (frontend calls this once on load)

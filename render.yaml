@@ -25,3 +25,5 @@ services:
         value: postgresql://snacktime_user:PT1ICFTuGctt8QS7da3FmVWMMJ8bLw33@dpg-dadeph2fngtc73b3vv7g-a.singapore-postgres.render.com:5432/snacktime
       - key: FRONTEND_URL
         value: https://sece-amenity-project.web.app
+      - key: DEPLOY_VERSION
+        value: "2026-09-05-v3"

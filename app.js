@@ -481,7 +481,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '3.1.0.1788617614857';
+const APP_VERSION = '3.1.0.1788626259162';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -662,7 +662,7 @@ async function syncLiveOrdersAndInventory(role) {
                     if (activeRole === 'vendor') {
                         renderVendorOrders();
                         renderVendorOrderHistory();
-                        updateVendorOrderBadge(liveOrders.length);
+                        updateVendorOrderBadge();
 
                         // Detect incoming unhandled new orders for audio/visual alerts
                         const newPending = liveOrders.find(o => !prevLiveIds.has(o.id) && (o.status || 'pending').toLowerCase() === 'pending');
@@ -809,12 +809,16 @@ function startDatabaseSync(role) {
             liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
             if (activeRole === 'vendor') {
-                renderVendorOrders();
-                renderVendorOrderHistory();
-                updateVendorOrderBadge(liveOrders.length);
-                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
-                playKitchenBuzzer();
-                announceOrderStatus(order, 'pending');
+                const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+                const orderVId = Number(order.vendorId || order.vendor_id || 1);
+                if (orderVId === myVId) {
+                    renderVendorOrders();
+                    renderVendorOrderHistory();
+                    updateVendorOrderBadge();
+                    triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
+                    playKitchenBuzzer();
+                    announceOrderStatus(order, 'pending');
+                }
             } else if (activeRole === 'student') {
                 renderInlineOrderHistory();
             }
@@ -875,13 +879,17 @@ function startDatabaseSync(role) {
                 }
                 renderInlineOrderHistory();
             } else if (activeRole === 'vendor') {
-                renderVendorOrders();
-                renderVendorOrderHistory();
-                updateVendorOrderBadge(liveOrders.length);
-                const statusLower = (newStatus || '').toLowerCase();
-                if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
-                    const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
-                    announceOrderStatus(readyOrder, statusLower);
+                const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+                const orderVId = Number((targetOrder && (targetOrder.vendorId || targetOrder.vendor_id)) || eventPayload.vendorId || myVId);
+                if (orderVId === myVId) {
+                    renderVendorOrders();
+                    renderVendorOrderHistory();
+                    updateVendorOrderBadge();
+                    const statusLower = (newStatus || '').toLowerCase();
+                    if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
+                        const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
+                        announceOrderStatus(readyOrder, statusLower);
+                    }
                 }
             }
         };
@@ -983,8 +991,10 @@ function stopDatabaseSync() {
 function updateVendorOrderBadge(count) {
     const badge = $('vendor-order-badge');
     if (!badge) return;
-    badge.innerText = count;
-    badge.style.display = count > 0 ? 'inline-block' : 'none';
+    const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+    const actualCount = typeof count === 'number' ? count : liveOrders.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVId).length;
+    badge.innerText = actualCount;
+    badge.style.display = actualCount > 0 ? 'inline-block' : 'none';
 }
 
 // ========================= UTILITIES =========================
@@ -1670,112 +1680,34 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         }
 
         if (!res.ok && contentType.includes('application/json')) {
-            // If login endpoint itself returns 401/403/500, it means the backend is
-            // running old code or has a server error — fall through to local fallback
-            if (res.status === 401 || res.status === 403 || res.status === 500) {
-                throw new Error('API_FALLBACK');
-            }
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
-                    if (errData.message.includes('Username not found')) {
-                        const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
-                        const localFound = localUsers.find(u => u.username.toLowerCase() === lowerUser || (u.email && u.email.toLowerCase() === lowerUser));
-                        if (localFound && localFound.password === passwordInput) {
-                            apiFetch('/api/register', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ username: localFound.username, email: localFound.email, password: passwordInput, role: localFound.role })
-                            }).then(async r => {
-                                let rData = {};
-                                try { rData = await r.json(); } catch(e) {}
-                                if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-                                executeLogin(localFound.username, localFound.role, localFound.email, rData.id || null, rData.token || null, rData.vendorId || null, rData.shopName || null);
-                            }).catch(() => {
-                                if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-                                executeLogin(localFound.username, localFound.role, localFound.email);
-                            });
-                            return;
-                        }
-                    }
-
-                    // Fallback for default student / vendor accounts if remote password mismatch
-                    if (errData.message.includes('Invalid password')) {
-                        if (role === 'student' && (lowerUser === 'student' || lowerUser === 'demo')) {
-                            // Try default student credentials automatically
-                            if (passwordInput !== 'student123') {
-                                return loginWithCredentials(usernameInput, 'student123', role);
-                            }
-                        }
-                        if (role === 'vendor') {
-                            const vId = resolveVendorId(usernameInput);
-                            const fallbackPass = `vendor${vId}`;
-                            if (passwordInput !== fallbackPass && passwordInput !== 'vendor123') {
-                                return loginWithCredentials(usernameInput, fallbackPass, role);
-                            }
-                        }
-                    }
-
                     if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                     if (errorMsg) {
                         errorMsg.innerText = errData.message;
                         errorMsg.style.display = 'block';
+                    } else {
+                        showNotification(errData.message, 'error');
                     }
                     return;
                 }
             } catch (e) {}
+            if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
+            if (errorMsg) {
+                errorMsg.innerText = `Login failed (${res.status}). Please check your credentials.`;
+                errorMsg.style.display = 'block';
+            }
+            return;
         }
 
-        // If non-JSON, static hosting 404, or unhandled error — fallback to local accounts
-        throw new Error('API_FALLBACK');
+        throw new Error('API_UNAVAILABLE');
     })
     .catch(err => {
         if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-
-        let authenticated = false;
-        let userEmail = '';
-        let vendorId = null;
-        let shopName = null;
-
-        // Default & Demo Accounts Fallback
-        if (role === 'vendor') {
-            authenticated = true;
-            vendorId = resolveVendorId(usernameInput);
-            shopName = VENDOR_NAMES_MAP[vendorId] || 'MAIN AMENITY';
-            userEmail = `${(shopName || 'vendor').toLowerCase().replace(/\s+/g, '')}@vendor.snacktime.com`;
-        } else if (role === 'student' && (lowerUser === 'student' || lowerUser === 'student1' || lowerUser === 'demo')) {
-            authenticated = true;
-            userEmail = `${lowerUser}@sece.ac.in`;
-        } else {
-            // Local Registered Users Fallback
-            const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
-            const found = localUsers.find(u => u.username.toLowerCase() === lowerUser || (u.email && u.email.toLowerCase() === lowerUser));
-            if (found) {
-                if (found.role !== role) {
-                    if (errorMsg) {
-                        errorMsg.innerText = `This account is registered as a ${found.role}. Please switch to the ${found.role === 'vendor' ? 'Vendor' : 'Student/Staff'} tab.`;
-                        errorMsg.style.display = 'block';
-                    }
-                    return;
-                }
-                authenticated = true;
-                userEmail = found.email;
-            } else if (usernameInput && passwordInput) {
-                // Auto-provision student/vendor session for smooth local/demo login
-                authenticated = true;
-                userEmail = role === 'student' ? `${lowerUser.replace(/\s+/g, '')}@sece.ac.in` : `${lowerUser.replace(/\s+/g, '')}@vendor.snacktime.com`;
-                localUsers.push({ username: usernameInput, email: userEmail, password: passwordInput, role });
-                localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
-            }
-        }
-
-        if (authenticated) {
-            executeLogin(usernameInput, role, userEmail, null, null, vendorId, shopName);
-        } else {
-            if (errorMsg) {
-                errorMsg.innerText = 'Invalid username or password. Please try again.';
-                errorMsg.style.display = 'block';
-            }
+        if (errorMsg) {
+            errorMsg.innerText = 'Unable to connect to server. Please check your internet connection.';
+            errorMsg.style.display = 'block';
         }
     });
 }
@@ -2178,12 +2110,23 @@ function cancelOrder(orderId) {
 
 // ========================= ORDER STATUS UPDATE =========================
 function updateOrderStatus(orderId, newStatus, cancelReason) {
+    const statusUrl = (currentUser && currentUser.role === 'vendor')
+        ? `/api/vendor/orders/${orderId}/status`
+        : `/api/orders/${orderId}/status`;
+
     // 1. Update in Express MySQL API backend
-    apiFetch(`/api/orders/${orderId}/status`, {
+    apiFetch(statusUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus, cancelReason: cancelReason || null })
-    }).catch(() => {});
+    }).then(async res => {
+        if (!res.ok) {
+            console.warn('Backend rejected order status update:', res.status);
+            if (currentUser && currentUser.role) syncLiveOrdersAndInventory(currentUser.role);
+        }
+    }).catch(err => {
+        console.warn('Status update network error:', err);
+    });
 
     // Optimistically update local state
     const orderInAll = allOrders.find(o => o.id === orderId);
@@ -2662,21 +2605,29 @@ function placeOrderAfterPayment(method, paymentId) {
         body: JSON.stringify(orderPayload)
     })
     .then(async res => {
+        if (!res.ok) {
+            let errorMsg = 'Failed to place order.';
+            try {
+                const errData = await res.json();
+                if (errData && errData.message) errorMsg = errData.message;
+            } catch(e) {}
+            isSubmitting = false;
+            showNotification(errorMsg, 'error');
+            const placeBtn = $('place-order-btn') || $('confirm-order-btn') || $('confirm-counter-btn');
+            if (placeBtn) { placeBtn.disabled = false; placeBtn.innerText = 'Confirm Order'; }
+            return;
+        }
         const data = await safeParseJson(res);
+        if (data && data.token) orderPayload.token = data.token;
+        if (data && data.id) orderPayload.id = data.id;
         finalizeOrderSuccess(orderPayload, paymentId);
     })
     .catch(err => {
-        // Fallback for static hosting / offline execution
-        console.warn('Backend API order post notice:', err.message);
-        // Deduct inventory locally
-        orderPayload.items.forEach(item => {
-            const invItem = inventory.find(i => Number(i.id) === Number(item.id));
-            if (invItem) {
-                invItem.stock = Math.max(0, invItem.stock - item.qty);
-                invItem.sold = (invItem.sold || 0) + item.qty;
-            }
-        });
-        finalizeOrderSuccess(orderPayload, paymentId);
+        console.error('Order placement network error:', err);
+        isSubmitting = false;
+        showNotification('Connection error while placing order. Please try again.', 'error');
+        const placeBtn = $('place-order-btn') || $('confirm-order-btn') || $('confirm-counter-btn');
+        if (placeBtn) { placeBtn.disabled = false; placeBtn.innerText = 'Confirm Order'; }
     });
 }
 
@@ -3095,9 +3046,12 @@ function renderVendorOrders() {
     document.querySelectorAll('[data-i18n="vendor_filter_preparing"]').forEach(el => { if (d.vendor_filter_preparing) el.innerText = d.vendor_filter_preparing; });
     document.querySelectorAll('[data-i18n="vendor_filter_all"]').forEach(el => { if (d.vendor_filter_all) el.innerText = d.vendor_filter_all; });
 
+    const myVendorId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+    const stallOrders = liveOrders.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVendorId);
+
     let filtered = orderFilter === 'all'
-        ? liveOrders
-        : liveOrders.filter(o => (o.status || '').toLowerCase() === orderFilter.toLowerCase());
+        ? stallOrders
+        : stallOrders.filter(o => (o.status || '').toLowerCase() === orderFilter.toLowerCase());
 
     if (query) {
         filtered = filtered.filter(o =>
@@ -3157,12 +3111,12 @@ function renderVendorOrders() {
             return `<li><span>${itemQty}x ${escapeHtml(tName)}</span><span>${formatCurrency((i.price || 0) * itemQty)}</span></li>`;
         }).join('');
 
-        const isActionable = rawStatus === 'pending' || rawStatus === 'preparing';
+        const isActionable = rawStatus === 'pending' || rawStatus === 'preparing' || rawStatus === 'ready';
         const isCounterOrder = rawMethod === 'counter' || rawMethod === 'pay at counter';
 
         return `
         <div class="swipeable-card-wrapper">
-            ${isActionable ? `<div class="swipe-action-bg"><i data-lucide="check" style="width:20px;height:20px;margin-right:6px;"></i> ${rawStatus === 'pending' ? acceptTxt : readyTxt}</div>` : ''}
+            ${isActionable ? `<div class="swipe-action-bg"><i data-lucide="check" style="width:20px;height:20px;margin-right:6px;"></i> ${rawStatus === 'pending' ? acceptTxt : (rawStatus === 'preparing' ? readyTxt : (collectedTxt || 'Collected'))}</div>` : ''}
             <div class="order-card swipeable-card" id="card-order-${order.id}" data-order-id="${order.id}">
                 <div class="order-card-header">
                     <div>
@@ -3188,9 +3142,15 @@ function renderVendorOrders() {
                 <div class="order-actions" style="margin-top:4px;">
                     <button class="outline-btn btn-cancel" onclick="vendorCancelOrder('${order.id}')">${cancelTxt}</button>
                     ${isCounterOrder ? `<button class="outline-btn" style="border-color:var(--info,#0ea5e9);color:var(--info,#0ea5e9);min-height:44px;" onclick="vendorPrintBill('${order.id}')">🖨️ Print Bill</button>` : ''}
+                    ${rawStatus === 'ready' ? `
+                    <button class="primary-btn btn-complete" style="min-height:44px;background:var(--success,#10b981);color:#fff;" onclick="updateOrderStatus('${order.id}', 'completed')">
+                        ✅ ${collectedTxt || 'Mark Collected'}
+                    </button>
+                    ` : `
                     <button class="primary-btn ${rawStatus === 'preparing' ? 'btn-ready' : ''}" style="min-height:44px;" onclick="updateOrderStatus('${order.id}', '${rawStatus === 'pending' ? 'preparing' : 'ready'}')">
                         ${rawStatus === 'pending' ? acceptTxt : readyTxt}
                     </button>
+                    `}
                 </div>
                 ` : ''}
             </div>
@@ -3473,6 +3433,8 @@ function attachSwipeGesturesToCards() {
                         updateOrderStatus(orderId, 'preparing');
                     } else if (order && order.status === 'preparing') {
                         updateOrderStatus(orderId, 'ready');
+                    } else if (order && order.status === 'ready') {
+                        updateOrderStatus(orderId, 'completed');
                     }
                 }, 150);
             } else {

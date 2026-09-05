@@ -1048,13 +1048,11 @@ app.get('/api/orders', async (req, res) => {
 
 // POST /api/orders (Student Multi-Vendor Checkout)
 app.post('/api/orders', authorize(['student']), async (req, res) => {
-    const { id, customer, total, time, placedAt, method, items, token, paymentId, status } = req.body;
+    const { id, total, time, placedAt, method, items, token, paymentId, status } = req.body;
+    const customer = req.user.username;
 
-    if (!id || !customer || !items || items.length === 0)
+    if (!id || !items || items.length === 0)
         return res.status(400).json({ message: 'Invalid order data.' });
-
-    if (customer !== req.user.username)
-        return res.status(403).json({ message: 'You can only place orders for yourself.' });
 
     const studentUserId = req.user.id || null;
 
@@ -1242,6 +1240,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             }
             io.to(`student_${customer}`).emit('orders_updated', ord);
             io.to(`student_${customer}`).emit('order.created', eventPayload);
+            const lowerCust = (customer || '').toLowerCase();
+            if (lowerCust && lowerCust !== customer) {
+                io.to(`student_${lowerCust}`).emit('orders_updated', ord);
+                io.to(`student_${lowerCust}`).emit('order.created', eventPayload);
+            }
             io.to(`order:${ord.id}`).emit('order.created', eventPayload);
 
             // Global order sync ping
@@ -1273,9 +1276,9 @@ async function handleOrderStatusUpdate(req, res) {
     const vId = req.user.vendorId || req.user.id || 1;
 
     const allowedTransitions = {
-        'pending': ['preparing', 'cancelled'],
-        'preparing': ['ready', 'cancelled'],
-        'ready': ['completed', 'cancelled'],
+        'pending': ['preparing', 'ready', 'completed', 'cancelled', 'expired'],
+        'preparing': ['ready', 'completed', 'cancelled'],
+        'ready': ['completed', 'cancelled', 'expired'],
         'completed': [],
         'cancelled': [],
         'expired': []
@@ -1361,6 +1364,11 @@ async function handleOrderStatusUpdate(req, res) {
         }
         io.to(`student_${currentOrder.customer}`).emit('order.status_changed', eventPayload);
         io.to(`student_${currentOrder.customer}`).emit('order_status_changed', updatedOrder);
+        const lowerOrderCust = (currentOrder.customer || '').toLowerCase();
+        if (lowerOrderCust && lowerOrderCust !== currentOrder.customer) {
+            io.to(`student_${lowerOrderCust}`).emit('order.status_changed', eventPayload);
+            io.to(`student_${lowerOrderCust}`).emit('order_status_changed', updatedOrder);
+        }
         io.to(`order:${id}`).emit('order.status_changed', eventPayload);
         io.to(`order:${id}`).emit('order_status_changed', updatedOrder);
 
@@ -1393,8 +1401,9 @@ app.put('/api/orders/:id/status', authorize(['vendor', 'student']), handleOrderS
 app.post('/api/reviews', authorize(['student']), async (req, res) => {
     const { orderId, customer, items, rating, feedback, time } = req.body;
 
-    if (customer !== req.user.username)
+    if (customer && customer.toLowerCase() !== req.user.username.toLowerCase())
         return res.status(403).json({ message: 'You can only review your own orders.' });
+    const finalCustomer = req.user.username;
 
     try {
         const [orders] = await db.query('SELECT vendor_id, status FROM orders WHERE id = ?', [orderId]);
@@ -1658,7 +1667,10 @@ io.on('connection', (socket) => {
         if (!user) return;
         if (user.role === 'student') {
             if (user.id) socket.join(`user:${user.id}`);
-            if (user.username) socket.join(`student_${user.username}`);
+            if (user.username) {
+                socket.join(`student_${user.username}`);
+                socket.join(`student_${user.username.toLowerCase()}`);
+            }
             socket.join('student_all');
         } else if (user.role === 'vendor') {
             const vendorId = resolveBackendVendorId(user);

@@ -40,8 +40,56 @@ let currentEngine = 'mock'; // 'pg', 'mysql', 'mock'
 let isMySQL = false;
 
 // Pre-seeded hashes for default accounts
-const DEFAULT_VENDOR_HASH = bcrypt.hashSync('vendor123', 10);
+const DEFAULT_VENDOR1_HASH = bcrypt.hashSync('vendor1', 10);
+const DEFAULT_VENDOR2_HASH = bcrypt.hashSync('vendor2', 10);
+const DEFAULT_VENDOR3_HASH = bcrypt.hashSync('vendor3', 10);
+const DEFAULT_VENDOR4_HASH = bcrypt.hashSync('vendor4', 10);
+const DEFAULT_VENDOR5_HASH = bcrypt.hashSync('vendor5', 10);
 const DEFAULT_STUDENT_HASH = bcrypt.hashSync('student123', 10);
+
+const SEEDED_VENDORS = [
+    { id: 1, name: 'Main Amenity', code: 'main_amenity', shop_status: 'open', break_end_time: null },
+    { id: 2, name: 'Mario Tea Corner', code: 'mario_tea', shop_status: 'open', break_end_time: null },
+    { id: 3, name: 'Only Cane', code: 'only_cane', shop_status: 'open', break_end_time: null },
+    { id: 4, name: 'Cafe Corner', code: 'cafe_corner', shop_status: 'open', break_end_time: null },
+    { id: 5, name: 'Stationery Store', code: 'stationery_store', shop_status: 'open', break_end_time: null }
+];
+
+const SEEDED_VENDOR_USERS = [
+    { id: 1, username: 'MAIN AMENITY', email: 'mainamenity@vendor.snacktime.com', password_hash: DEFAULT_VENDOR1_HASH, role: 'vendor', vendor_id: 1 },
+    { id: 2, username: 'MARIO TEA CORNER', email: 'mariotea@vendor.snacktime.com', password_hash: DEFAULT_VENDOR2_HASH, role: 'vendor', vendor_id: 2 },
+    { id: 3, username: 'ONLY CANE', email: 'onlycane@vendor.snacktime.com', password_hash: DEFAULT_VENDOR3_HASH, role: 'vendor', vendor_id: 3 },
+    { id: 4, username: 'CAFE CORNER', email: 'cafecorner@vendor.snacktime.com', password_hash: DEFAULT_VENDOR4_HASH, role: 'vendor', vendor_id: 4 },
+    { id: 5, username: 'STATIONERY STORE', email: 'stationery@vendor.snacktime.com', password_hash: DEFAULT_VENDOR5_HASH, role: 'vendor', vendor_id: 5 }
+];
+
+const SEEDED_INVENTORY = [
+    { id: 1, name: "Samosa", price: 15, stock: 50, sold: 12, vendor_id: 1, is_special: false, original_price: null },
+    { id: 2, name: "Masala Dosa", price: 60, stock: 20, sold: 8, vendor_id: 1, is_special: false, original_price: null },
+    { id: 3, name: "Veg Meals", price: 80, stock: 35, sold: 24, vendor_id: 1, is_special: false, original_price: null },
+    { id: 4, name: "Bonda", price: 20, stock: 40, sold: 18, vendor_id: 1, is_special: false, original_price: null },
+    { id: 5, name: "Sweet Corn", price: 25, stock: 35, sold: 14, vendor_id: 1, is_special: false, original_price: null },
+    { id: 6, name: "Tea", price: 10, stock: 100, sold: 65, vendor_id: 2, is_special: false, original_price: null },
+    { id: 7, name: "Filter Coffee", price: 15, stock: 80, sold: 42, vendor_id: 2, is_special: false, original_price: null },
+    { id: 8, name: "Cold Coffee", price: 40, stock: 30, sold: 15, vendor_id: 2, is_special: false, original_price: null },
+    { id: 9, name: "Biscuits", price: 10, stock: 100, sold: 45, vendor_id: 2, is_special: false, original_price: null },
+    { id: 10, name: "Boost", price: 20, stock: 50, sold: 12, vendor_id: 2, is_special: false, original_price: null },
+    { id: 11, name: "Horlicks", price: 20, stock: 50, sold: 10, vendor_id: 2, is_special: false, original_price: null },
+    { id: 12, name: "Sugarcane Juice", price: 30, stock: 50, sold: 30, vendor_id: 3, is_special: false, original_price: null },
+    { id: 13, name: "Ginger Cane Juice", price: 35, stock: 40, sold: 22, vendor_id: 3, is_special: false, original_price: null },
+    { id: 14, name: "Lime Cane Juice", price: 35, stock: 40, sold: 18, vendor_id: 3, is_special: false, original_price: null },
+    { id: 15, name: "Fresh Orange Juice", price: 45, stock: 30, sold: 14, vendor_id: 3, is_special: false, original_price: null },
+    { id: 16, name: "Veg Sandwich", price: 35, stock: 40, sold: 20, vendor_id: 4, is_special: false, original_price: null },
+    { id: 17, name: "Cheese Burger", price: 65, stock: 25, sold: 16, vendor_id: 4, is_special: false, original_price: null },
+    { id: 18, name: "French Fries", price: 50, stock: 30, sold: 18, vendor_id: 4, is_special: false, original_price: null },
+    { id: 19, name: "Veg Pizza", price: 90, stock: 20, sold: 11, vendor_id: 4, is_special: false, original_price: null },
+    { id: 20, name: "Peri Peri Fries", price: 60, stock: 25, sold: 9, vendor_id: 4, is_special: false, original_price: null },
+    { id: 21, name: "Long Notebook (192 pgs)", price: 45, stock: 60, sold: 32, vendor_id: 5, is_special: false, original_price: null },
+    { id: 22, name: "SECE Blue Pen", price: 10, stock: 150, sold: 85, vendor_id: 5, is_special: false, original_price: null },
+    { id: 23, name: "SECE Record Note", price: 60, stock: 40, sold: 28, vendor_id: 5, is_special: false, original_price: null },
+    { id: 24, name: "Graph Sheet Bundle", price: 20, stock: 50, sold: 15, vendor_id: 5, is_special: false, original_price: null },
+    { id: 25, name: "Geometry Box", price: 85, stock: 25, sold: 6, vendor_id: 5, is_special: false, original_price: null }
+];
 
 // ========================= POSTGRESQL QUERY ADAPTER =========================
 function translateSqlForPg(sql) {
@@ -93,39 +141,20 @@ async function getPgConnection() {
 
 // ========================= MOCK JSON DATABASE ENGINE =========================
 let jsonData = {
+    vendors: SEEDED_VENDORS,
     users: [
+        ...SEEDED_VENDOR_USERS,
         {
-            id: 1,
-            username: 'vendor',
-            email: 'vendor@vendor.snacktime.com',
-            password_hash: DEFAULT_VENDOR_HASH,
-            role: 'vendor',
-            created_at: new Date().toISOString()
-        },
-        {
-            id: 2,
+            id: 6,
             username: 'student',
             email: 'student@sece.ac.in',
             password_hash: DEFAULT_STUDENT_HASH,
             role: 'student',
+            vendor_id: null,
             created_at: new Date().toISOString()
         }
     ],
-    inventory: [
-        { id: 1,  name: "Samosa",          price: 15,  stock: 50, sold: 12, is_special: false, original_price: null },
-        { id: 2,  name: "Cold Coffee",     price: 40,  stock: 30, sold: 5,  is_special: false, original_price: null  },
-        { id: 3,  name: "Masala Dosa",     price: 60,  stock: 20, sold: 8,  is_special: false, original_price: null  },
-        { id: 4,  name: "Veg Sandwich",    price: 35,  stock: 40, sold: 15, is_special: false, original_price: null },
-        { id: 5,  name: "Tea",             price: 10,  stock: 80, sold: 30, is_special: false, original_price: null },
-        { id: 6,  name: "Coffee",          price: 15,  stock: 60, sold: 22, is_special: false, original_price: null },
-        { id: 7,  name: "Biscuits",        price: 10,  stock: 100, sold: 45, is_special: false, original_price: null },
-        { id: 8,  name: "Bonda",           price: 20,  stock: 40, sold: 18, is_special: false, original_price: null },
-        { id: 9,  name: "Sugarcane Juice", price: 30,  stock: 25, sold: 10, is_special: false, original_price: null },
-        { id: 10, name: "Sweet Corn",      price: 25,  stock: 35, sold: 14, is_special: false, original_price: null },
-        { id: 11, name: "French Fries",    price: 50,  stock: 30, sold: 9,  is_special: false, original_price: null  },
-        { id: 12, name: "Horlicks",        price: 20,  stock: 50, sold: 0,  is_special: false, original_price: null  },
-        { id: 13, name: "Boost",           price: 20,  stock: 50, sold: 0,  is_special: false, original_price: null  }
-    ],
+    inventory: SEEDED_INVENTORY,
     orders: [],
     order_items: [],
     settings: [
@@ -440,9 +469,48 @@ async function mockQuery(sql, params = []) {
         return [{ insertId: newTicket.id }];
     }
 
-    // 28. SELECT * FROM support_tickets
-    if (cleanSql.includes('SELECT * FROM support_tickets')) {
-        const sorted = [...jsonData.support_tickets].sort((a,b) => b.id - a.id);
+    // 29. SELECT * FROM vendors
+    if (cleanSql.includes('SELECT * FROM vendors WHERE id =')) {
+        const vendor = jsonData.vendors.find(v => Number(v.id) === Number(params[0]));
+        return [vendor ? [vendor] : []];
+    }
+    if (cleanSql.includes('SELECT * FROM vendors')) {
+        return [jsonData.vendors];
+    }
+
+    // 30. UPDATE vendors SET shop_status = ?, break_end_time = ? WHERE id = ?
+    if (cleanSql.includes('UPDATE vendors SET shop_status =') || cleanSql.includes('UPDATE vendors SET')) {
+        const targetId = params[params.length - 1];
+        const vendor = jsonData.vendors.find(v => Number(v.id) === Number(targetId));
+        if (vendor) {
+            if (params.length >= 3) {
+                vendor.shop_status = params[0];
+                vendor.break_end_time = params[1];
+            } else if (params.length === 2) {
+                vendor.shop_status = params[0];
+            }
+            saveJSON();
+        }
+        return [{}];
+    }
+
+    // 31. Inventory by vendor_id
+    if (cleanSql.includes('FROM inventory WHERE vendor_id =')) {
+        const items = jsonData.inventory.filter(i => Number(i.vendor_id || 1) === Number(params[0]));
+        return [items];
+    }
+
+    // 32. Orders by vendor_id
+    if (cleanSql.includes('FROM orders WHERE vendor_id =')) {
+        const orders = jsonData.orders.filter(o => Number(o.vendor_id || 1) === Number(params[0]));
+        const sorted = [...orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
+        return [sorted];
+    }
+
+    // 33. Reviews by vendor_id
+    if (cleanSql.includes('FROM reviews WHERE vendor_id =')) {
+        const reviews = jsonData.reviews.filter(r => Number(r.vendor_id || 1) === Number(params[0]));
+        const sorted = [...reviews].sort((a,b) => b.id - a.id);
         return [sorted];
     }
 
@@ -531,44 +599,77 @@ async function initDB() {
 }
 
 async function createPgTables() {
-    await pgPool.query('CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE NOT NULL, email VARCHAR(100) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, code VARCHAR(50) UNIQUE NOT NULL, shop_status VARCHAR(20) DEFAULT \'open\', break_end_time BIGINT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(50) UNIQUE NOT NULL, email VARCHAR(100) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, vendor_id INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
     await pgPool.query('CREATE TABLE IF NOT EXISTS inventory (id SERIAL PRIMARY KEY, name VARCHAR(100) UNIQUE NOT NULL, price DECIMAL(10, 2) NOT NULL, stock INT NOT NULL DEFAULT 0, sold INT NOT NULL DEFAULT 0, is_special BOOLEAN DEFAULT FALSE, original_price DECIMAL(10, 2), vendor_id INT DEFAULT 1, version INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
-    await pgPool.query('CREATE TABLE IF NOT EXISTS orders (id VARCHAR(50) PRIMARY KEY, user_id INT NULL, vendor_id INT DEFAULT 1, customer VARCHAR(50) NOT NULL, total DECIMAL(10, 2) NOT NULL, status VARCHAR(20) DEFAULT \'pending\', time VARCHAR(50) NULL, placed_at BIGINT NOT NULL, method VARCHAR(50) NOT NULL, rating INT NULL, feedback TEXT NULL, cancel_reason TEXT NULL, token INT NULL, payment_id VARCHAR(100) NULL, version INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
-    await pgPool.query('CREATE TABLE IF NOT EXISTS order_items (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL REFERENCES orders(id) ON DELETE CASCADE, item_id INT NOT NULL, name VARCHAR(100) NOT NULL, qty INT NOT NULL, price DECIMAL(10, 2) NOT NULL)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS orders (id VARCHAR(50) PRIMARY KEY, user_id INT NULL, vendor_id INT DEFAULT 1, master_order_id VARCHAR(50) NULL, customer VARCHAR(50) NOT NULL, total DECIMAL(10, 2) NOT NULL, status VARCHAR(20) DEFAULT \'pending\', time VARCHAR(50) NULL, placed_at BIGINT NOT NULL, method VARCHAR(50) NOT NULL, rating INT NULL, feedback TEXT NULL, cancel_reason TEXT NULL, token INT NULL, payment_id VARCHAR(100) NULL, version INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS order_items (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL REFERENCES orders(id) ON DELETE CASCADE, item_id INT NOT NULL, name VARCHAR(100) NOT NULL, qty INT NOT NULL, price DECIMAL(10, 2) NOT NULL, vendor_id INT DEFAULT 1)');
     await pgPool.query('CREATE TABLE IF NOT EXISTS settings (setting_key VARCHAR(50) PRIMARY KEY, setting_value VARCHAR(255))');
-    await pgPool.query('CREATE TABLE IF NOT EXISTS reviews (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL, customer VARCHAR(50) NOT NULL, items TEXT NOT NULL, rating INT NOT NULL, feedback TEXT NULL, time VARCHAR(100) NOT NULL)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS vendor_settings (vendor_id INT PRIMARY KEY, shop_status VARCHAR(20) DEFAULT \'open\', break_start BIGINT NULL, break_end BIGINT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+    await pgPool.query('CREATE TABLE IF NOT EXISTS reviews (id SERIAL PRIMARY KEY, order_id VARCHAR(50) NOT NULL, vendor_id INT DEFAULT 1, customer VARCHAR(50) NOT NULL, items TEXT NOT NULL, rating INT NOT NULL, feedback TEXT NULL, time VARCHAR(100) NOT NULL)');
     await pgPool.query('CREATE TABLE IF NOT EXISTS support_tickets (id SERIAL PRIMARY KEY, username VARCHAR(50) NOT NULL, order_id VARCHAR(50) NULL, message TEXT NOT NULL, status VARCHAR(20) DEFAULT \'open\', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+
+    // Ensure columns exist on existing tables
+    try { await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS vendor_id INT NULL;'); } catch (e) {}
+    try { await pgPool.query('ALTER TABLE inventory ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;'); } catch (e) {}
+    try { await pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;'); } catch (e) {}
+    try { await pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS master_order_id VARCHAR(50) NULL;'); } catch (e) {}
+    try { await pgPool.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;'); } catch (e) {}
+    try { await pgPool.query('ALTER TABLE reviews ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;'); } catch (e) {}
 }
 
 async function seedPgDatabase() {
-    const userRes = await pgPool.query('SELECT COUNT(*) as count FROM users');
-    if (parseInt(userRes.rows[0].count) === 0) {
-        await pgPool.query('INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, $3, $4)', ['vendor', 'vendor@vendor.snacktime.com', DEFAULT_VENDOR_HASH, 'vendor']);
-        await pgPool.query('INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, $3, $4)', ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student']);
-        console.log('🌱 Default accounts seeded into Cloud PostgreSQL DB!');
+    // 1. Seed 5 Vendors
+    for (const v of SEEDED_VENDORS) {
+        const vRes = await pgPool.query('SELECT id FROM vendors WHERE id = $1', [v.id]);
+        if (vRes.rows.length === 0) {
+            await pgPool.query('INSERT INTO vendors (id, name, code, shop_status) VALUES ($1, $2, $3, $4)', [v.id, v.name, v.code, v.shop_status]);
+        }
     }
 
-    const invRes = await pgPool.query('SELECT COUNT(*) as count FROM inventory');
-    if (parseInt(invRes.rows[0].count) === 0) {
-        const items = [
-            ['Samosa', 15, 50],
-            ['Cold Coffee', 40, 30],
-            ['Masala Dosa', 60, 20],
-            ['Veg Sandwich', 35, 40],
-            ['Tea', 10, 80],
-            ['Coffee', 15, 60],
-            ['Biscuits', 10, 100],
-            ['Bonda', 20, 40],
-            ['Sugarcane Juice', 30, 25],
-            ['Sweet Corn', 25, 35],
-            ['French Fries', 50, 30],
-            ['Horlicks', 20, 50],
-            ['Boost', 20, 50]
-        ];
-        for (const item of items) {
-            await pgPool.query('INSERT INTO inventory (name, price, stock) VALUES ($1, $2, $3)', item);
+    // 2. Seed 5 Vendor Users + Aliases + Student
+    for (const u of SEEDED_VENDOR_USERS) {
+        const uRes = await pgPool.query('SELECT id FROM users WHERE LOWER(username) = $1 OR id = $2', [u.username.toLowerCase(), u.id]);
+        if (uRes.rows.length === 0) {
+            await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', [u.username, u.email, u.password_hash, u.role, u.vendor_id]);
+        } else {
+            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2 WHERE id = $3 OR LOWER(username) = $4', [u.password_hash, u.vendor_id, u.id, u.username.toLowerCase()]);
         }
-        console.log('🌱 Default inventory seeded into Cloud PostgreSQL DB!');
+    }
+
+    // Vendor aliases (vendor1, vendor2, vendor3, vendor4, vendor5, vendor)
+    const aliases = [
+        { username: 'vendor', email: 'vendor@vendor.snacktime.com', hash: DEFAULT_VENDOR1_HASH, vendor_id: 1 },
+        { username: 'vendor1', email: 'vendor1@vendor.snacktime.com', hash: DEFAULT_VENDOR1_HASH, vendor_id: 1 },
+        { username: 'vendor2', email: 'vendor2@vendor.snacktime.com', hash: DEFAULT_VENDOR2_HASH, vendor_id: 2 },
+        { username: 'vendor3', email: 'vendor3@vendor.snacktime.com', hash: DEFAULT_VENDOR3_HASH, vendor_id: 3 },
+        { username: 'vendor4', email: 'vendor4@vendor.snacktime.com', hash: DEFAULT_VENDOR4_HASH, vendor_id: 4 },
+        { username: 'vendor5', email: 'vendor5@vendor.snacktime.com', hash: DEFAULT_VENDOR5_HASH, vendor_id: 5 }
+    ];
+
+    for (const a of aliases) {
+        const aRes = await pgPool.query('SELECT id FROM users WHERE LOWER(username) = $1', [a.username]);
+        if (aRes.rows.length === 0) {
+            await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', [a.username, a.email, a.hash, 'vendor', a.vendor_id]);
+        } else {
+            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2 WHERE LOWER(username) = $3', [a.hash, a.vendor_id, a.username]);
+        }
+    }
+
+    // Student account
+    const sRes = await pgPool.query('SELECT id FROM users WHERE username = $1', ['student']);
+    if (sRes.rows.length === 0) {
+        await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student', null]);
+    }
+
+    // 3. Seed partitioned inventory across 5 vendors
+    for (const item of SEEDED_INVENTORY) {
+        const iRes = await pgPool.query('SELECT id FROM inventory WHERE id = $1 OR LOWER(name) = $2', [item.id, item.name.toLowerCase()]);
+        if (iRes.rows.length === 0) {
+            await pgPool.query('INSERT INTO inventory (id, name, price, stock, sold, vendor_id) VALUES ($1, $2, $3, $4, $5, $6)', [item.id, item.name, item.price, item.stock, item.sold || 0, item.vendor_id]);
+        } else {
+            await pgPool.query('UPDATE inventory SET vendor_id = $1 WHERE id = $2 OR LOWER(name) = $3', [item.vendor_id, item.id, item.name.toLowerCase()]);
+        }
     }
 
     const setRes = await pgPool.query('SELECT COUNT(*) as count FROM settings WHERE setting_key = $1', ['shop_status']);
@@ -579,7 +680,20 @@ async function seedPgDatabase() {
 }
 
 async function createTables() {
-    // 1. Users Table
+    // 1. Vendors Table
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS vendors (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            code VARCHAR(50) UNIQUE NOT NULL,
+            shop_status VARCHAR(20) DEFAULT 'open',
+            break_end_time BIGINT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        );
+    `);
+
+    // 2. Users Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -587,11 +701,12 @@ async function createTables() {
             email VARCHAR(100),
             password_hash VARCHAR(255) NOT NULL,
             role ENUM('student', 'vendor') NOT NULL,
+            vendor_id INT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     `);
 
-    // 2. Inventory / Menu Table
+    // 3. Inventory / Menu Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS inventory (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -607,12 +722,13 @@ async function createTables() {
         );
     `);
 
-    // 3. Orders Table
+    // 4. Orders Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS orders (
             id VARCHAR(50) PRIMARY KEY,
             user_id INT NULL,
             vendor_id INT DEFAULT 1,
+            master_order_id VARCHAR(50) NULL,
             customer VARCHAR(50) NOT NULL,
             total DECIMAL(10, 2) NOT NULL,
             status ENUM('pending', 'preparing', 'ready', 'completed', 'cancelled', 'expired') DEFAULT 'pending',
@@ -629,30 +745,21 @@ async function createTables() {
         );
     `);
 
-    // Ensure columns exist if table was already created
+    // Ensure columns exist on existing tables
     try {
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id INT NULL;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS time VARCHAR(50) NULL;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS token INT NULL;`);
-        await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(100) NULL;`);
-        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS vendor_id INT DEFAULT 1;`);
-        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;`);
-        await pool.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;`);
-    } catch (e) {
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN user_id INT NULL;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN vendor_id INT DEFAULT 1;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN version INT DEFAULT 1;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN time VARCHAR(50) NULL;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN token INT NULL;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE orders ADD COLUMN payment_id VARCHAR(100) NULL;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE inventory ADD COLUMN vendor_id INT DEFAULT 1;`); } catch(err) {}
-        try { await pool.query(`ALTER TABLE inventory ADD COLUMN version INT DEFAULT 1;`); } catch(err) {}
-    }
+        await pool.query(`ALTER TABLE users ADD COLUMN vendor_id INT NULL;`);
+    } catch (e) {}
+    try {
+        await pool.query(`ALTER TABLE orders ADD COLUMN vendor_id INT DEFAULT 1;`);
+    } catch (e) {}
+    try {
+        await pool.query(`ALTER TABLE orders ADD COLUMN master_order_id VARCHAR(50) NULL;`);
+    } catch (e) {}
+    try {
+        await pool.query(`ALTER TABLE inventory ADD COLUMN vendor_id INT DEFAULT 1;`);
+    } catch (e) {}
 
-    // 4. Order Items Table
+    // 5. Order Items Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS order_items (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -661,11 +768,12 @@ async function createTables() {
             name VARCHAR(100) NOT NULL,
             qty INT NOT NULL,
             price DECIMAL(10, 2) NOT NULL,
+            vendor_id INT DEFAULT 1,
             FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
         );
     `);
 
-    // 5. Settings Table
+    // 6. Settings Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS settings (
             setting_key VARCHAR(50) PRIMARY KEY,
@@ -673,11 +781,12 @@ async function createTables() {
         );
     `);
 
-    // 6. Reviews / Feedback Table
+    // 7. Reviews Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS reviews (
             id INT AUTO_INCREMENT PRIMARY KEY,
             order_id VARCHAR(50) NOT NULL,
+            vendor_id INT DEFAULT 1,
             customer VARCHAR(50) NOT NULL,
             items TEXT NOT NULL,
             rating INT NOT NULL,
@@ -686,7 +795,7 @@ async function createTables() {
         );
     `);
 
-    // 7. Support Tickets Table
+    // 8. Support Tickets Table
     await pool.query(`
         CREATE TABLE IF NOT EXISTS support_tickets (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -700,43 +809,67 @@ async function createTables() {
 }
 
 async function seedDatabase() {
-    const [userRows] = await pool.query('SELECT COUNT(*) as count FROM users');
-    if (userRows[0].count === 0) {
-        console.log('🌱 Seeding default vendor & student accounts into MySQL...');
+    // Seed Vendors
+    for (const v of SEEDED_VENDORS) {
+        const [vRows] = await pool.query('SELECT id FROM vendors WHERE id = ?', [v.id]);
+        if (vRows.length === 0) {
+            await pool.query('INSERT INTO vendors (id, name, code, shop_status) VALUES (?, ?, ?, ?)', [v.id, v.name, v.code, v.shop_status]);
+        }
+    }
+
+    // Seed Vendor Users
+    for (const u of SEEDED_VENDOR_USERS) {
+        const [uRows] = await pool.query('SELECT id FROM users WHERE LOWER(username) = ?', [u.username.toLowerCase()]);
+        if (uRows.length === 0) {
+            await pool.query(
+                'INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES (?, ?, ?, ?, ?)',
+                [u.username, u.email, u.password_hash, u.role, u.vendor_id]
+            );
+        } else {
+            await pool.query(
+                'UPDATE users SET password_hash = ?, vendor_id = ? WHERE LOWER(username) = ?',
+                [u.password_hash, u.vendor_id, u.username.toLowerCase()]
+            );
+        }
+    }
+
+    // Aliases
+    const aliases = [
+        { username: 'vendor', email: 'vendor@vendor.snacktime.com', hash: DEFAULT_VENDOR1_HASH, vendor_id: 1 },
+        { username: 'vendor1', email: 'vendor1@vendor.snacktime.com', hash: DEFAULT_VENDOR1_HASH, vendor_id: 1 },
+        { username: 'vendor2', email: 'vendor2@vendor.snacktime.com', hash: DEFAULT_VENDOR2_HASH, vendor_id: 2 },
+        { username: 'vendor3', email: 'vendor3@vendor.snacktime.com', hash: DEFAULT_VENDOR3_HASH, vendor_id: 3 },
+        { username: 'vendor4', email: 'vendor4@vendor.snacktime.com', hash: DEFAULT_VENDOR4_HASH, vendor_id: 4 },
+        { username: 'vendor5', email: 'vendor5@vendor.snacktime.com', hash: DEFAULT_VENDOR5_HASH, vendor_id: 5 }
+    ];
+    for (const a of aliases) {
+        const [aRows] = await pool.query('SELECT id FROM users WHERE LOWER(username) = ?', [a.username]);
+        if (aRows.length === 0) {
+            await pool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES (?, ?, ?, ?, ?)', [a.username, a.email, a.hash, 'vendor', a.vendor_id]);
+        } else {
+            await pool.query('UPDATE users SET password_hash = ?, vendor_id = ? WHERE LOWER(username) = ?', [a.hash, a.vendor_id, a.username]);
+        }
+    }
+
+    // Student
+    const [sRows] = await pool.query('SELECT id FROM users WHERE username = "student"');
+    if (sRows.length === 0) {
         await pool.query(
-            'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            ['vendor', 'vendor@vendor.snacktime.com', DEFAULT_VENDOR_HASH, 'vendor']
-        );
-        await pool.query(
-            'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student']
+            'INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES (?, ?, ?, ?, ?)',
+            ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student', null]
         );
     }
 
-    const [rows] = await pool.query('SELECT COUNT(*) as count FROM inventory');
-    if (rows[0].count === 0) {
-        console.log('🌱 Seeding initial inventory into MySQL...');
-        const initialInventory = [
-            { id: 1,  name: "Samosa",          price: 15,  stock: 50, sold: 12 },
-            { id: 2,  name: "Cold Coffee",     price: 40,  stock: 30, sold: 5  },
-            { id: 3,  name: "Masala Dosa",     price: 60,  stock: 20, sold: 8  },
-            { id: 4,  name: "Veg Sandwich",    price: 35,  stock: 40, sold: 15 },
-            { id: 5,  name: "Tea",             price: 10,  stock: 80, sold: 30 },
-            { id: 6,  name: "Coffee",          price: 15,  stock: 60, sold: 22 },
-            { id: 7,  name: "Biscuits",        price: 10,  stock: 100, sold: 45 },
-            { id: 8,  name: "Bonda",           price: 20,  stock: 40, sold: 18 },
-            { id: 9,  name: "Sugarcane Juice", price: 30,  stock: 25, sold: 10 },
-            { id: 10, name: "Sweet Corn",      price: 25,  stock: 35, sold: 14 },
-            { id: 11, name: "French Fries",    price: 50,  stock: 30, sold: 9  },
-            { id: 12, name: "Horlicks",        price: 20,  stock: 50, sold: 0  },
-            { id: 13, name: "Boost",           price: 20,  stock: 50, sold: 0  }
-        ];
-
-        for (const item of initialInventory) {
+    // Inventory
+    for (const item of SEEDED_INVENTORY) {
+        const [iRows] = await pool.query('SELECT id FROM inventory WHERE id = ? OR LOWER(name) = ?', [item.id, item.name.toLowerCase()]);
+        if (iRows.length === 0) {
             await pool.query(
-                'INSERT INTO inventory (id, name, price, stock, sold, is_special, original_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [item.id, item.name, item.price, item.stock, item.sold, false, null]
+                'INSERT INTO inventory (id, name, price, stock, sold, is_special, original_price, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [item.id, item.name, item.price, item.stock, item.sold || 0, false, null, item.vendor_id]
             );
+        } else {
+            await pool.query('UPDATE inventory SET vendor_id = ? WHERE id = ? OR LOWER(name) = ?', [item.vendor_id, item.id, item.name.toLowerCase()]);
         }
     }
 

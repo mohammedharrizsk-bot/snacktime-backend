@@ -423,7 +423,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.11.1788584819463';
+const APP_VERSION = '2.0.0.1788600000000';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -560,11 +560,15 @@ async function syncLiveOrdersAndInventory(role) {
             return;
         }
 
+        const ordersUrl = (activeRole === 'vendor') ? '/api/vendor/orders' : '/api/orders';
+        const invUrl = (activeRole === 'vendor') ? '/api/vendor/inventory' : '/api/inventory';
+        const setUrl = (activeRole === 'vendor') ? '/api/vendor/status' : '/api/settings';
+
         // Fetch in parallel for maximum speed & lowest latency
         const [ordersRes, inventoryRes, settingsRes] = await Promise.allSettled([
-            apiFetch('/api/orders'),
-            apiFetch('/api/inventory'),
-            apiFetch('/api/settings')
+            apiFetch(ordersUrl),
+            apiFetch(invUrl),
+            apiFetch(setUrl)
         ]);
 
         // 1. Process Live Orders
@@ -1536,7 +1540,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             localStorage.setItem('snacktime_users', JSON.stringify(localUsers));
 
             if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-            executeLogin(data.username || usernameInput, data.role || role, data.email || '', data.id || null, data.token || null);
+            executeLogin(data.username || usernameInput, data.role || role, data.email || '', data.id || null, data.token || null, data.vendorId || null, data.shopName || null);
             return;
         }
 
@@ -1556,7 +1560,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
                                 let rData = {};
                                 try { rData = await r.json(); } catch(e) {}
                                 if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
-                                executeLogin(localFound.username, localFound.role, localFound.email, rData.id || null, rData.token || null);
+                                executeLogin(localFound.username, localFound.role, localFound.email, rData.id || null, rData.token || null, rData.vendorId || null, rData.shopName || null);
                             }).catch(() => {
                                 if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                                 executeLogin(localFound.username, localFound.role, localFound.email);
@@ -1584,11 +1588,23 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
 
         let authenticated = false;
         let userEmail = '';
+        let vendorId = null;
+        let shopName = null;
 
         // Default & Demo Accounts Fallback
-        if (role === 'vendor' && (lowerUser === 'vendor' || lowerUser === 'vendor1' || lowerUser.includes('vendor'))) {
+        if (role === 'vendor') {
             authenticated = true;
-            userEmail = 'vendor@vendor.snacktime.com';
+            if (lowerUser.includes('mario') || lowerUser === 'vendor2') {
+                vendorId = 2; shopName = 'MARIO TEA CORNER'; userEmail = 'mariotea@vendor.snacktime.com';
+            } else if (lowerUser.includes('cane') || lowerUser === 'vendor3') {
+                vendorId = 3; shopName = 'ONLY CANE'; userEmail = 'onlycane@vendor.snacktime.com';
+            } else if (lowerUser.includes('cafe') || lowerUser === 'vendor4') {
+                vendorId = 4; shopName = 'CAFE CORNER'; userEmail = 'cafecorner@vendor.snacktime.com';
+            } else if (lowerUser.includes('stationery') || lowerUser === 'vendor5') {
+                vendorId = 5; shopName = 'STATIONERY STORE'; userEmail = 'stationery@vendor.snacktime.com';
+            } else {
+                vendorId = 1; shopName = 'MAIN AMENITY'; userEmail = 'mainamenity@vendor.snacktime.com';
+            }
         } else if (role === 'student' && (lowerUser === 'student' || lowerUser === 'student1' || lowerUser === 'demo')) {
             authenticated = true;
             userEmail = `${lowerUser}@sece.ac.in`;
@@ -1624,7 +1640,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         }
 
         if (authenticated) {
-            executeLogin(usernameInput, role, userEmail);
+            executeLogin(usernameInput, role, userEmail, null, null, vendorId, shopName);
         } else {
             if (errorMsg) {
                 errorMsg.innerText = 'Invalid username or password. Please try again.';
@@ -1634,8 +1650,19 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
     });
 }
 
-function executeLogin(username, role, email = '', id = null, token = null) {
-    currentUser = { username, role, email, id };
+function executeLogin(username, role, email = '', id = null, token = null, vendorId = null, shopName = null) {
+    let resolvedVendorId = vendorId;
+    if (role === 'vendor' && !resolvedVendorId) {
+        const u = (username || '').toLowerCase();
+        if (u.includes('mario') || u === 'vendor2') resolvedVendorId = 2;
+        else if (u.includes('cane') || u === 'vendor3') resolvedVendorId = 3;
+        else if (u.includes('cafe') || u === 'vendor4') resolvedVendorId = 4;
+        else if (u.includes('stationery') || u === 'vendor5') resolvedVendorId = 5;
+        else resolvedVendorId = Number(id || 1);
+    }
+    const resolvedShopName = shopName || (role === 'vendor' ? (VENDOR_NAMES_MAP[resolvedVendorId] || username) : null);
+
+    currentUser = { username, role, email, id, vendorId: resolvedVendorId, shopName: resolvedShopName };
     localStorage.setItem('snacktime_session', JSON.stringify(currentUser));
     if (token) {
         localStorage.setItem('snacktime_jwt_token', token);
@@ -1646,16 +1673,26 @@ function executeLogin(username, role, email = '', id = null, token = null) {
 
     const headerEl = $('header-username');
     if (headerEl) headerEl.textContent = username;
-    const vendorHeaderEl = $('vendor-header-username');
-    if (vendorHeaderEl) vendorHeaderEl.textContent = username;
 
     if (role === 'vendor') {
+        const vTitle = resolvedShopName || username;
+        const vendorHeaderEl = $('vendor-header-username');
+        if (vendorHeaderEl) vendorHeaderEl.textContent = vTitle;
+        const sidebarTitle = $('vendor-sidebar-title');
+        if (sidebarTitle) sidebarTitle.textContent = vTitle;
+        const sidebarSubtitle = $('vendor-sidebar-subtitle');
+        if (sidebarSubtitle) sidebarSubtitle.textContent = `🏪 ${vTitle}`;
+        const dashHeading = $('vendor-dashboard-heading');
+        if (dashHeading) dashHeading.textContent = `🏪 ${vTitle} - Live Orders`;
+        const mobHeading = $('vendor-mobile-heading');
+        if (mobHeading) mobHeading.textContent = vTitle;
+
         switchScreen('vendor-screen');
         switchVendorTab('orders');
         startDatabaseSync('vendor');
         checkShopStatus();
         renderVendorOrders();
-        showNotification("✅ Vendor Dashboard Loaded", 'success');
+        showNotification(`✅ Connected to ${vTitle} Dashboard`, 'success');
     } else {
         switchScreen('customer-screen');
         switchCustomerTab('menu');
@@ -2042,13 +2079,33 @@ function updateOrderStatus(orderId, newStatus, cancelReason) {
     if (msgs[newStatus]) showNotification(`Order ${orderId}: ${msgs[newStatus]}`);
 }
 
-// ========================= MENU =========================
+// ========================= MENU & STALL FILTERING =========================
+const VENDOR_NAMES_MAP = {
+    1: 'Main Amenity',
+    2: 'Mario Tea Corner',
+    3: 'Only Cane',
+    4: 'Cafe Corner',
+    5: 'Stationery Store'
+};
+
+let activeVendorFilter = 'all';
+
+function setStallFilter(vId) {
+    activeVendorFilter = vId;
+    document.querySelectorAll('.filter-chip').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = $(`stall-filter-${vId}`);
+    if (activeBtn) activeBtn.classList.add('active');
+    renderMenu();
+}
+
 function buildCardHtml(item, extraClass = '', extraStyle = '') {
     const isFav = favourites.includes(item.id);
     const favIcon = isFav
         ? '<i data-lucide="heart" fill="var(--danger)" color="var(--danger)"></i>'
         : '<i data-lucide="heart" color="var(--text-secondary)"></i>';
     const isSpecial = item.isSpecial;
+    const vendorId = Number(item.vendorId || 1);
+    const stallName = VENDOR_NAMES_MAP[vendorId] || 'Main Amenity';
 
     let discountBadgeText = 'OFFER';
     if (isSpecial) {
@@ -2084,7 +2141,10 @@ function buildCardHtml(item, extraClass = '', extraStyle = '') {
         <div class="snack-card ${extraClass}" ${extraStyle ? `style="${extraStyle}"` : ''}>
             ${isSpecial ? `<div class="offer-badge">${discountBadgeText}</div>` : ''}
             <div style="display:flex;justify-content:space-between;align-items:start">
-                <h4>${nameHtml}</h4>
+                <div>
+                    <span class="stall-badge">🏪 ${escapeHtml(stallName)}</span>
+                    <h4 style="margin-top:2px;">${nameHtml}</h4>
+                </div>
                 <button class="fav-btn" onclick="toggleFavourite(${item.id})" title="Favourite">${favIcon}</button>
             </div>
             <div class="snack-price">${priceHtml}</div>
@@ -2130,7 +2190,12 @@ function renderMenu() {
     const specialsSection = $('specials-section');
     let normalHtml = '', specialHtml = '', hasSpecial = false;
 
-    inventory.forEach(item => {
+    let itemsToRender = inventory;
+    if (activeVendorFilter !== 'all') {
+        itemsToRender = inventory.filter(i => Number(i.vendorId || 1) === Number(activeVendorFilter));
+    }
+
+    itemsToRender.forEach(item => {
         if (item.isSpecial) {
             hasSpecial = true;
             specialHtml += buildCardHtml(item, 'special-card');
@@ -2157,7 +2222,7 @@ function renderMenu() {
     if (normalGrid) normalGrid.innerHTML = normalHtml || `
         <div class="empty-state">
             <i data-lucide="utensils-crossed" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i>
-            <p>The kitchen is prepping! Check back soon.</p>
+            <p>No items found for this stall right now. Check back soon!</p>
         </div>`;
     lucide.createIcons();
 }

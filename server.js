@@ -168,6 +168,9 @@ function authenticate(req, res, next) {
     if (!token) return res.status(401).json({ message: 'Authentication required.' });
     try {
         req.user = jwt.verify(token, JWT_SECRET);
+        if (req.user.role === 'vendor' && !req.user.vendorId) {
+            req.user.vendorId = Number(req.user.id || 1);
+        }
         next();
     } catch (_) {
         return res.status(401).json({ message: 'Invalid or expired token.' });
@@ -183,6 +186,25 @@ function authorize(allowedRoles) {
         next();
     };
 }
+
+// Strict Vendor-Only authorization helper
+function authorizeVendor(req, res, next) {
+    if (!req.user) return res.status(401).json({ message: 'Unauthenticated.' });
+    if (req.user.role !== 'vendor')
+        return res.status(403).json({ message: 'Forbidden: Vendor access required.' });
+    if (!req.user.vendorId) {
+        req.user.vendorId = Number(req.user.id || 1);
+    }
+    next();
+}
+
+const VENDOR_SHOPS = {
+    1: { id: 1, name: 'Main Amenity', code: 'main_amenity', username: 'MAIN AMENITY' },
+    2: { id: 2, name: 'Mario Tea Corner', code: 'mario_tea', username: 'MARIO TEA CORNER' },
+    3: { id: 3, name: 'Only Cane', code: 'only_cane', username: 'ONLY CANE' },
+    4: { id: 4, name: 'Cafe Corner', code: 'cafe_corner', username: 'CAFE CORNER' },
+    5: { id: 5, name: 'Stationery Store', code: 'stationery_store', username: 'STATIONERY STORE' }
+};
 
 // ──────────────────────────────────────────────────────────────
 // PUBLIC AUTH ROUTES (no authenticate middleware)
@@ -258,28 +280,62 @@ app.post('/api/login', authLimiter, async (req, res) => {
         return res.status(400).json({ message: 'Username, password and role are required.' });
 
     const lowerUser = (username || '').toLowerCase().trim();
+    const cleanUser = lowerUser.replace(/[\s\-_]/g, '');
 
     try {
+        // Find user by username or email
         const [users] = await db.query('SELECT * FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?', [lowerUser, lowerUser]);
         
         let user = null;
         if (users && users.length > 0) {
             user = users[0];
         } else {
-            // Default vendor / student accounts fallback
-            if (role === 'vendor' && (lowerUser === 'vendor' || lowerUser === 'vendor1' || lowerUser.startsWith('vendor') || lowerUser === 'vendor@vendor.snacktime.com')) {
-                if (password === 'vendor123' || password.length >= 4) {
+            // Check Vendor 1 to 5 Aliases & Auto-Provision
+            if (role === 'vendor') {
+                let vendorId = 1;
+                let shopName = 'MAIN AMENITY';
+                let shopEmail = 'mainamenity@vendor.snacktime.com';
+                let defaultPass = 'vendor1';
+
+                if (cleanUser.includes('mario') || cleanUser === 'vendor2') {
+                    vendorId = 2;
+                    shopName = 'MARIO TEA CORNER';
+                    shopEmail = 'mariotea@vendor.snacktime.com';
+                    defaultPass = 'vendor2';
+                } else if (cleanUser.includes('cane') || cleanUser === 'vendor3') {
+                    vendorId = 3;
+                    shopName = 'ONLY CANE';
+                    shopEmail = 'onlycane@vendor.snacktime.com';
+                    defaultPass = 'vendor3';
+                } else if (cleanUser.includes('cafe') || cleanUser === 'vendor4') {
+                    vendorId = 4;
+                    shopName = 'CAFE CORNER';
+                    shopEmail = 'cafecorner@vendor.snacktime.com';
+                    defaultPass = 'vendor4';
+                } else if (cleanUser.includes('stationery') || cleanUser === 'vendor5') {
+                    vendorId = 5;
+                    shopName = 'STATIONERY STORE';
+                    shopEmail = 'stationery@vendor.snacktime.com';
+                    defaultPass = 'vendor5';
+                }
+
+                if (password === defaultPass || password === 'vendor123' || password.length >= 4) {
                     const salt = await bcrypt.genSalt(10);
                     const hash = await bcrypt.hash(password, salt);
-                    await db.query('INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, "vendor")', [username.trim(), `${lowerUser}@vendor.snacktime.com`, hash]);
-                    user = { id: 1, username: username.trim(), email: `${lowerUser}@vendor.snacktime.com`, role: 'vendor', password_hash: hash };
+                    try {
+                        await db.query(
+                            'INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES (?, ?, ?, "vendor", ?)',
+                            [shopName, shopEmail, hash, vendorId]
+                        );
+                    } catch (e) {}
+                    user = { id: vendorId, username: shopName, email: shopEmail, role: 'vendor', vendor_id: vendorId, password_hash: hash };
                 }
             } else if (role === 'student' && (lowerUser === 'student' || lowerUser === 'student1' || lowerUser === 'demo')) {
                 if (password === 'student123' || password.length >= 4) {
                     const salt = await bcrypt.genSalt(10);
                     const hash = await bcrypt.hash(password, salt);
                     await db.query('INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, "student")', [username.trim(), `${lowerUser}@sece.ac.in`, hash]);
-                    user = { id: 2, username: username.trim(), email: `${lowerUser}@sece.ac.in`, role: 'student', password_hash: hash };
+                    user = { id: 6, username: username.trim(), email: `${lowerUser}@sece.ac.in`, role: 'student', password_hash: hash };
                 }
             }
         }
@@ -294,13 +350,43 @@ app.post('/api/login', authLimiter, async (req, res) => {
             });
         }
 
+        // Resolve vendor_id if user is a vendor
+        let vendorId = null;
+        if (user.role === 'vendor') {
+            vendorId = Number(user.vendor_id || user.id || 1);
+            if (isNaN(vendorId) || vendorId < 1 || vendorId > 5) {
+                // Infer from username
+                const u = (user.username || '').toLowerCase();
+                if (u.includes('mario') || u === 'vendor2') vendorId = 2;
+                else if (u.includes('cane') || u === 'vendor3') vendorId = 3;
+                else if (u.includes('cafe') || u === 'vendor4') vendorId = 4;
+                else if (u.includes('stationery') || u === 'vendor5') vendorId = 5;
+                else vendorId = 1;
+            }
+        }
+
         const isMatch = await bcrypt.compare(password, user.password_hash);
-        if (!isMatch && password !== 'vendor123' && password !== 'student123') {
+        const isDefaultMatch = (
+            password === 'vendor123' ||
+            password === 'student123' ||
+            (role === 'vendor' && password === `vendor${vendorId || 1}`)
+        );
+
+        if (!isMatch && !isDefaultMatch) {
             return res.status(400).json({ message: 'Invalid password. Please try again.' });
         }
 
+        const tokenPayload = {
+            id: user.id,
+            username: user.username,
+            role: user.role
+        };
+        if (vendorId) {
+            tokenPayload.vendorId = vendorId;
+        }
+
         const token = jwt.sign(
-            { id: user.id, username: user.username, role: user.role },
+            tokenPayload,
             JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -310,11 +396,15 @@ app.post('/api/login', authLimiter, async (req, res) => {
             secure: IS_PROD
         });
 
+        const shopInfo = vendorId ? VENDOR_SHOPS[vendorId] : null;
+
         res.json({
             id:        user.id,
             username:  user.username,
             email:     user.email,
             role:      user.role,
+            vendorId:  vendorId,
+            shopName:  shopInfo ? shopInfo.name : (vendorId ? `Vendor ${vendorId}` : null),
             token:     token,
             createdAt: user.created_at || new Date().toISOString()
         });
@@ -416,11 +506,328 @@ app.post('/api/reset-password-confirm', async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
+// PUBLIC VENDOR DIRECTORY
+// ──────────────────────────────────────────────────────────────
+app.get('/api/vendors', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT id, name, code, shop_status, break_end_time FROM vendors ORDER BY id ASC');
+        const list = (rows && rows.length > 0 ? rows : Object.values(VENDOR_SHOPS)).map(v => ({
+            id: Number(v.id),
+            name: v.name,
+            code: v.code,
+            shopStatus: v.shop_status || 'open',
+            shopOpen: v.shop_status !== 'closed',
+            breakEndTime: v.break_end_time ? Number(v.break_end_time) : null
+        }));
+        res.json(list);
+    } catch (err) {
+        console.error('Error fetching vendors:', err);
+        res.json(Object.values(VENDOR_SHOPS).map(v => ({ id: v.id, name: v.name, code: v.code, shopStatus: 'open', shopOpen: true, breakEndTime: null })));
+    }
+});
+
+// ──────────────────────────────────────────────────────────────
 // PROTECTED API ROUTES (require JWT + CSRF)
 // ──────────────────────────────────────────────────────────────
 app.use('/api', authenticate, csrfProtection);
 
-// GET /api/inventory
+// ==============================================================
+// VENDOR DEDICATED ISOLATED API ENDPOINTS
+// ==============================================================
+
+// GET /api/vendor/profile
+app.get('/api/vendor/profile', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [rows] = await db.query('SELECT * FROM vendors WHERE id = ?', [vId]);
+        const vendor = (rows && rows.length > 0) ? rows[0] : (VENDOR_SHOPS[vId] || { id: vId, name: req.user.username, shop_status: 'open', break_end_time: null });
+        res.json({
+            vendorId: vId,
+            username: req.user.username,
+            name: vendor.name,
+            shopName: vendor.name,
+            shopStatus: vendor.shop_status || 'open',
+            shopOpen: vendor.shop_status !== 'closed',
+            breakEndTime: vendor.break_end_time ? Number(vendor.break_end_time) : null
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor profile.' });
+    }
+});
+
+// GET /api/vendor/orders (Strictly isolated to req.user.vendorId)
+app.get('/api/vendor/orders', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [orders] = await db.query('SELECT * FROM orders WHERE vendor_id = ? ORDER BY placed_at DESC', [vId]);
+        const fullOrders = [];
+
+        for (const order of orders) {
+            const [items] = await db.query('SELECT * FROM order_items WHERE order_id = ?', [order.id]);
+
+            let queueAhead = 0;
+            let queuePosition = 1;
+            let estMinutes = 3;
+
+            if (['pending', 'preparing'].includes(order.status)) {
+                try {
+                    const [aheadRows] = await db.query(
+                        "SELECT COUNT(*) AS count FROM orders WHERE status IN ('pending', 'preparing') AND placed_at < ? AND vendor_id = ?",
+                        [order.placed_at, vId]
+                    );
+                    queueAhead = Number(aheadRows[0]?.count || 0);
+                    queuePosition = queueAhead + 1;
+                    estMinutes = Math.max(3, queuePosition * 3);
+                } catch (e) {}
+            }
+
+            fullOrders.push({
+                id:           order.id,
+                userId:       order.user_id,
+                vendorId:     Number(order.vendor_id || vId),
+                masterOrderId: order.master_order_id || null,
+                customer:     order.customer,
+                total:        Number(order.total),
+                status:       order.status,
+                time:         order.time,
+                placedAt:     Number(order.placed_at),
+                method:       order.method,
+                rating:       order.rating,
+                feedback:     order.feedback,
+                cancelReason: order.cancel_reason,
+                token:        order.token,
+                paymentId:    order.payment_id,
+                queueAhead:   queueAhead,
+                queuePosition: queuePosition,
+                estMinutes:   estMinutes,
+                items: items.map(item => ({
+                    id:    item.item_id,
+                    name:  item.name,
+                    qty:   item.qty,
+                    price: Number(item.price),
+                    vendorId: item.vendor_id || vId
+                }))
+            });
+        }
+        res.json(fullOrders);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor orders.' });
+    }
+});
+
+// GET /api/vendor/order-history
+app.get('/api/vendor/order-history', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [orders] = await db.query(
+            "SELECT * FROM orders WHERE vendor_id = ? AND status IN ('completed', 'cancelled', 'expired') ORDER BY placed_at DESC",
+            [vId]
+        );
+        const fullOrders = [];
+        for (const order of orders) {
+            const [items] = await db.query('SELECT * FROM order_items WHERE order_id = ?', [order.id]);
+            fullOrders.push({
+                id:           order.id,
+                userId:       order.user_id,
+                vendorId:     Number(order.vendor_id || vId),
+                customer:     order.customer,
+                total:        Number(order.total),
+                status:       order.status,
+                time:         order.time,
+                placedAt:     Number(order.placed_at),
+                method:       order.method,
+                rating:       order.rating,
+                feedback:     order.feedback,
+                cancelReason: order.cancel_reason,
+                token:        order.token,
+                paymentId:    order.payment_id,
+                items: items.map(item => ({
+                    id:    item.item_id,
+                    name:  item.name,
+                    qty:   item.qty,
+                    price: Number(item.price)
+                }))
+            });
+        }
+        res.json(fullOrders);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor order history.' });
+    }
+});
+
+// GET /api/vendor/inventory
+app.get('/api/vendor/inventory', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [items] = await db.query('SELECT * FROM inventory WHERE vendor_id = ? ORDER BY id ASC', [vId]);
+        res.json(items.map(i => ({
+            id:            Number(i.id),
+            name:          i.name,
+            price:         Number(i.price),
+            stock:         Number(i.stock),
+            sold:          Number(i.sold),
+            isSpecial:     Boolean(i.is_special),
+            originalPrice: i.original_price ? Number(i.original_price) : null,
+            vendorId:      Number(i.vendor_id || vId)
+        })));
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor inventory.' });
+    }
+});
+
+// POST /api/vendor/inventory
+app.post('/api/vendor/inventory', authorizeVendor, async (req, res) => {
+    const { name, price, stock } = req.body;
+    if (!name || isNaN(price) || isNaN(stock))
+        return res.status(400).json({ message: 'Invalid parameters.' });
+
+    const vId = req.user.vendorId;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO inventory (name, price, stock, sold, is_special, vendor_id) VALUES (?, ?, ?, 0, false, ?)',
+            [name.trim(), Number(price), Number(stock), vId]
+        );
+        broadcastInventoryUpdate(vId);
+        res.status(201).json({ id: result.insertId, name: name.trim(), price: Number(price), stock: Number(stock), sold: 0, vendorId: vId });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error adding vendor item.' });
+    }
+});
+
+// PUT /api/vendor/inventory/:id/stock (IDOR Protected)
+app.put('/api/vendor/inventory/:id/stock', authorizeVendor, async (req, res) => {
+    const { id } = req.params;
+    const { stock } = req.body;
+    const vId = req.user.vendorId;
+
+    try {
+        const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
+        if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot modify another vendor's product." });
+
+        await db.query('UPDATE inventory SET stock = ? WHERE id = ?', [Number(stock), id]);
+        await broadcastInventoryUpdate(vId);
+        res.json({ message: 'Stock updated successfully.' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error updating stock.' });
+    }
+});
+
+// PUT /api/vendor/inventory/:id/price (IDOR Protected)
+app.put('/api/vendor/inventory/:id/price', authorizeVendor, async (req, res) => {
+    const { id } = req.params;
+    const { price } = req.body;
+    const vId = req.user.vendorId;
+
+    try {
+        const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
+        if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot modify another vendor's product." });
+
+        await db.query('UPDATE inventory SET price = ? WHERE id = ?', [Number(price), id]);
+        await broadcastInventoryUpdate(vId);
+        res.json({ message: 'Price updated successfully.' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error updating price.' });
+    }
+});
+
+// DELETE /api/vendor/inventory/:id (IDOR Protected)
+app.delete('/api/vendor/inventory/:id', authorizeVendor, async (req, res) => {
+    const { id } = req.params;
+    const vId = req.user.vendorId;
+
+    try {
+        const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
+        if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot delete another vendor's product." });
+
+        await db.query('DELETE FROM inventory WHERE id = ?', [id]);
+        await broadcastInventoryUpdate(vId);
+        res.json({ message: 'Item deleted successfully.' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error deleting item.' });
+    }
+});
+
+// GET /api/vendor/reviews
+app.get('/api/vendor/reviews', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [reviews] = await db.query('SELECT * FROM reviews WHERE vendor_id = ? ORDER BY id DESC', [vId]);
+        res.json(reviews);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor reviews.' });
+    }
+});
+
+// GET /api/vendor/status
+app.get('/api/vendor/status', authorizeVendor, async (req, res) => {
+    try {
+        const vId = req.user.vendorId;
+        const [rows] = await db.query('SELECT shop_status, break_end_time FROM vendors WHERE id = ?', [vId]);
+        const vendor = (rows && rows.length > 0) ? rows[0] : { shop_status: 'open', break_end_time: null };
+        res.json({
+            vendorId: vId,
+            shopOpen: vendor.shop_status !== 'closed',
+            shopStatus: vendor.shop_status || 'open',
+            breakEndTime: vendor.break_end_time ? Number(vendor.break_end_time) : null
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching vendor status.' });
+    }
+});
+
+// PUT /api/vendor/status
+app.put('/api/vendor/status', authorizeVendor, async (req, res) => {
+    const { shopOpen, minutes } = req.body;
+    const vId = req.user.vendorId;
+
+    try {
+        let statusVal = shopOpen ? 'open' : 'closed';
+        let breakEnd = null;
+
+        if (minutes && !isNaN(minutes)) {
+            statusVal = 'open';
+            breakEnd = Date.now() + Number(minutes) * 60000;
+        }
+
+        await db.query('UPDATE vendors SET shop_status = ?, break_end_time = ? WHERE id = ?', [statusVal, breakEnd ? String(breakEnd) : null, vId]);
+
+        const settings = {
+            vendorId: vId,
+            shopOpen: statusVal !== 'closed',
+            shopStatus: statusVal,
+            breakEndTime: breakEnd
+        };
+
+        io.to(`vendor:${vId}`).emit('vendor.status_changed', settings);
+        io.emit('vendor.status_changed', settings);
+        res.json(settings);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error updating vendor status.' });
+    }
+});
+
+// ==============================================================
+// PUBLIC / STUDENT INVENTORY & ORDERS (With strict authorization)
+// ==============================================================
+
+// GET /api/inventory (Returns full menu with vendorId attached)
 app.get('/api/inventory', async (req, res) => {
     try {
         const [items] = await db.query('SELECT * FROM inventory ORDER BY id ASC');
@@ -432,7 +839,7 @@ app.get('/api/inventory', async (req, res) => {
             sold:          Number(i.sold),
             isSpecial:     Boolean(i.is_special),
             originalPrice: i.original_price ? Number(i.original_price) : null,
-            vendorId:      i.vendor_id || null
+            vendorId:      Number(i.vendor_id || 1)
         })));
     } catch (err) {
         console.error(err);
@@ -440,38 +847,40 @@ app.get('/api/inventory', async (req, res) => {
     }
 });
 
-// POST /api/inventory
+// POST /api/inventory (Legacy/Admin compatibility)
 app.post('/api/inventory', authorize(['vendor']), async (req, res) => {
     const { name, price, stock } = req.body;
     if (!name || isNaN(price) || isNaN(stock))
         return res.status(400).json({ message: 'Invalid parameters.' });
 
+    const vId = req.user.vendorId || 1;
     try {
         const [result] = await db.query(
             'INSERT INTO inventory (name, price, stock, sold, is_special, vendor_id) VALUES (?, ?, ?, 0, false, ?)',
-            [name, price, stock, req.user.username]
+            [name, price, stock, vId]
         );
-        broadcastInventoryUpdate();
-        res.status(201).json({ id: result.insertId, name, price, stock, sold: 0, vendorId: req.user.username });
+        broadcastInventoryUpdate(vId);
+        res.status(201).json({ id: result.insertId, name, price, stock, sold: 0, vendorId: vId });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Error adding item.' });
     }
 });
 
-// PUT /api/inventory/:id/stock
+// PUT /api/inventory/:id/stock (Legacy + IDOR Protected)
 app.put('/api/inventory/:id/stock', authorize(['vendor']), async (req, res) => {
     const { id } = req.params;
     const { stock } = req.body;
+    const vId = req.user.vendorId || 1;
 
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
-            return res.status(403).json({ message: "Cannot modify another vendor's product." });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot modify another vendor's product." });
 
         await db.query('UPDATE inventory SET stock = ? WHERE id = ?', [stock, id]);
-        await broadcastInventoryUpdate();
+        await broadcastInventoryUpdate(vId);
         res.json({ message: 'Stock updated successfully.' });
     } catch (err) {
         console.error(err);
@@ -479,19 +888,20 @@ app.put('/api/inventory/:id/stock', authorize(['vendor']), async (req, res) => {
     }
 });
 
-// PUT /api/inventory/:id/price
+// PUT /api/inventory/:id/price (Legacy + IDOR Protected)
 app.put('/api/inventory/:id/price', authorize(['vendor']), async (req, res) => {
     const { id } = req.params;
     const { price } = req.body;
+    const vId = req.user.vendorId || 1;
 
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
-            return res.status(403).json({ message: "Cannot modify another vendor's product." });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot modify another vendor's product." });
 
         await db.query('UPDATE inventory SET price = ? WHERE id = ?', [price, id]);
-        await broadcastInventoryUpdate();
+        await broadcastInventoryUpdate(vId);
         res.json({ message: 'Price updated successfully.' });
     } catch (err) {
         console.error(err);
@@ -499,18 +909,19 @@ app.put('/api/inventory/:id/price', authorize(['vendor']), async (req, res) => {
     }
 });
 
-// DELETE /api/inventory/:id
+// DELETE /api/inventory/:id (Legacy + IDOR Protected)
 app.delete('/api/inventory/:id', authorize(['vendor']), async (req, res) => {
     const { id } = req.params;
+    const vId = req.user.vendorId || 1;
 
     try {
         const [rows] = await db.query('SELECT vendor_id FROM inventory WHERE id = ?', [id]);
         if (rows.length === 0) return res.status(404).json({ message: 'Item not found.' });
-        if (rows[0].vendor_id && rows[0].vendor_id != req.user.id && rows[0].vendor_id !== req.user.username && rows[0].vendor_id != 1)
-            return res.status(403).json({ message: "Cannot delete another vendor's product." });
+        if (Number(rows[0].vendor_id) !== Number(vId))
+            return res.status(403).json({ message: "Forbidden: Cannot delete another vendor's product." });
 
         await db.query('DELETE FROM inventory WHERE id = ?', [id]);
-        await broadcastInventoryUpdate();
+        await broadcastInventoryUpdate(vId);
         res.json({ message: 'Item deleted successfully.' });
     } catch (err) {
         console.error(err);
@@ -518,7 +929,7 @@ app.delete('/api/inventory/:id', authorize(['vendor']), async (req, res) => {
     }
 });
 
-// GET /api/orders
+// GET /api/orders (Student sees only student orders, Vendor sees only their vendor orders)
 app.get('/api/orders', async (req, res) => {
     try {
         let ordersQuery = 'SELECT * FROM orders ORDER BY placed_at DESC';
@@ -527,6 +938,9 @@ app.get('/api/orders', async (req, res) => {
         if (req.user.role === 'student') {
             ordersQuery = 'SELECT * FROM orders WHERE customer = ? ORDER BY placed_at DESC';
             queryParams = [req.user.username];
+        } else if (req.user.role === 'vendor') {
+            ordersQuery = 'SELECT * FROM orders WHERE vendor_id = ? ORDER BY placed_at DESC';
+            queryParams = [req.user.vendorId || 1];
         }
 
         const [orders] = await db.query(ordersQuery, queryParams);
@@ -553,6 +967,9 @@ app.get('/api/orders', async (req, res) => {
 
             fullOrders.push({
                 id:           order.id,
+                userId:       order.user_id,
+                vendorId:     Number(order.vendor_id || 1),
+                masterOrderId: order.master_order_id || null,
                 customer:     order.customer,
                 total:        Number(order.total),
                 status:       order.status,
@@ -571,7 +988,8 @@ app.get('/api/orders', async (req, res) => {
                     id:    item.item_id,
                     name:  item.name,
                     qty:   item.qty,
-                    price: Number(item.price)
+                    price: Number(item.price),
+                    vendorId: item.vendor_id || order.vendor_id || 1
                 }))
             });
         }
@@ -582,7 +1000,7 @@ app.get('/api/orders', async (req, res) => {
     }
 });
 
-// POST /api/orders
+// POST /api/orders (Student Multi-Vendor Checkout)
 app.post('/api/orders', authorize(['student']), async (req, res) => {
     const { id, customer, total, time, placedAt, method, items, token, paymentId, status } = req.body;
 
@@ -593,7 +1011,6 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         return res.status(403).json({ message: 'You can only place orders for yourself.' });
 
     const studentUserId = req.user.id || null;
-    const vendorId = 1; // Default Sri Eshwar College Vendor ID
 
     const conn = await db.pool().getConnection();
     try {
@@ -607,17 +1024,19 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             return res.status(200).json({ ...existingOrders[0], message: 'Order already exists.' });
         }
 
-        // 2. Concurrency Check: Row-level lock inventory and validate stock
+        // 2. Concurrency Check: Row-level lock inventory and validate stock + identify item vendor_id
+        const itemVendorMap = {};
         for (const cartItem of items) {
             const [rows] = await conn.query(
-                'SELECT stock, name FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
+                'SELECT id, stock, name, vendor_id FROM inventory WHERE id = ? FOR UPDATE', [cartItem.id]
             );
             if (rows.length === 0 || rows[0].stock < cartItem.qty) {
                 await conn.rollback();
                 conn.release();
                 const name = rows.length > 0 ? rows[0].name : 'Item';
-                return res.status(400).json({ message: `"${name}" is now out of stock. Please update your cart.` });
+                return res.status(400).json({ message: `"${name}" is out of stock or insufficient quantity available. Please update your cart.` });
             }
+            itemVendorMap[cartItem.id] = Number(rows[0].vendor_id || 1);
         }
 
         // 3. Atomically deduct inventory stock
@@ -628,66 +1047,119 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             );
         }
 
-        const orderStatus = status || 'pending';
-        await conn.query(
-            'INSERT INTO orders (id, user_id, vendor_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [id, studentUserId, vendorId, customer, total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
-        );
-
+        // 4. Partition items by vendor_id
+        const vendorGroups = {};
         for (const cartItem of items) {
+            const vId = itemVendorMap[cartItem.id] || 1;
+            if (!vendorGroups[vId]) {
+                vendorGroups[vId] = { vendorId: vId, items: [], total: 0 };
+            }
+            vendorGroups[vId].items.push(cartItem);
+            vendorGroups[vId].total += (Number(cartItem.price) * Number(cartItem.qty));
+        }
+
+        const vendorIdKeys = Object.keys(vendorGroups).map(Number);
+        const orderStatus = status || 'pending';
+        const createdOrders = [];
+
+        // If all items belong to 1 vendor
+        if (vendorIdKeys.length === 1) {
+            const vId = vendorIdKeys[0];
             await conn.query(
-                'INSERT INTO order_items (order_id, item_id, name, qty, price) VALUES (?, ?, ?, ?, ?)',
-                [id, cartItem.id, cartItem.name, cartItem.qty, cartItem.price]
+                'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [id, studentUserId, vId, null, customer, total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
             );
+
+            for (const cartItem of items) {
+                await conn.query(
+                    'INSERT INTO order_items (order_id, item_id, name, qty, price, vendor_id) VALUES (?, ?, ?, ?, ?, ?)',
+                    [id, cartItem.id, cartItem.name, cartItem.qty, cartItem.price, vId]
+                );
+            }
+
+            createdOrders.push({
+                id,
+                userId: studentUserId,
+                vendorId: vId,
+                customer,
+                total,
+                status: orderStatus,
+                time,
+                placedAt,
+                method,
+                items,
+                token,
+                paymentId,
+                version: 1
+            });
+        } else {
+            // Multi-Vendor Cart: Partition into linked sub-orders
+            for (let i = 0; i < vendorIdKeys.length; i++) {
+                const vId = vendorIdKeys[i];
+                const subOrderId = `${id}-V${vId}`;
+                const group = vendorGroups[vId];
+
+                await conn.query(
+                    'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, token || null, paymentId || null, 1]
+                );
+
+                for (const cartItem of group.items) {
+                    await conn.query(
+                        'INSERT INTO order_items (order_id, item_id, name, qty, price, vendor_id) VALUES (?, ?, ?, ?, ?, ?)',
+                        [subOrderId, cartItem.id, cartItem.name, cartItem.qty, cartItem.price, vId]
+                    );
+                }
+
+                createdOrders.push({
+                    id: subOrderId,
+                    masterOrderId: id,
+                    userId: studentUserId,
+                    vendorId: vId,
+                    customer,
+                    total: group.total,
+                    status: orderStatus,
+                    time,
+                    placedAt,
+                    method,
+                    items: group.items,
+                    token,
+                    paymentId,
+                    version: 1
+                });
+            }
         }
 
         await conn.commit();
         conn.release();
 
-        const createdOrder = {
-            id,
-            userId: studentUserId,
-            vendorId,
-            customer,
-            total,
-            status: orderStatus,
-            time,
-            placedAt,
-            method,
-            items,
-            token,
-            paymentId,
-            version: 1,
-            updatedAt: Date.now()
-        };
+        // 5. Emit targeted real-time WebSocket events strictly to respective vendor rooms
+        for (const ord of createdOrders) {
+            const eventPayload = {
+                eventId: 'evt_' + crypto.randomUUID(),
+                event: 'order.created',
+                version: 1,
+                orderId: ord.id,
+                userId: studentUserId,
+                vendorId: ord.vendor_id || ord.vendorId,
+                order: ord,
+                updatedAt: Date.now()
+            };
 
-        // Standardized WebSocket Event: order.created
-        const eventPayload = {
-            eventId: 'evt_' + crypto.randomUUID(),
-            event: 'order.created',
-            version: 1,
-            orderId: id,
-            userId: studentUserId,
-            vendorId,
-            order: createdOrder,
-            updatedAt: Date.now()
-        };
-
-        // Targeted emission: To vendor room, to student's user room, and to order room
-        io.to('vendors').emit('order.created', eventPayload);
-        io.to(`vendor:${vendorId}`).emit('order.created', eventPayload);
-        io.to('vendors').emit('orders_updated', createdOrder);
-        if (studentUserId) {
-            io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
+            io.to(`vendor:${ord.vendor_id || ord.vendorId}`).emit('order.created', eventPayload);
+            io.to(`vendor:${ord.vendor_id || ord.vendorId}`).emit('orders_updated', ord);
+            if (studentUserId) {
+                io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
+            }
+            io.to(`student_${customer}`).emit('orders_updated', ord);
+            io.to(`student_${customer}`).emit('order.created', eventPayload);
+            io.to(`order:${ord.id}`).emit('order.created', eventPayload);
         }
-        io.to(`student_${customer}`).emit('orders_updated', createdOrder);
-        io.to(`student_${customer}`).emit('order.created', eventPayload);
-        io.to(`order:${id}`).emit('order.created', eventPayload);
 
         // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
 
-        res.status(201).json(createdOrder);
+        res.status(201).json(createdOrders[0]);
     } catch (err) {
         await conn.rollback();
         conn.release();
@@ -696,10 +1168,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
     }
 });
 
-// PUT /api/orders/:id/status
-app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
+// PUT /api/vendor/orders/:id/status & PUT /api/orders/:id/status (IDOR Checked)
+async function handleOrderStatusUpdate(req, res) {
     const { id } = req.params;
     const { status, cancelReason } = req.body;
+    const vId = req.user.vendorId || req.user.id || 1;
 
     const allowedTransitions = {
         'pending': ['preparing', 'cancelled'],
@@ -722,6 +1195,14 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
         }
 
         const currentOrder = orders[0];
+
+        // Strict IDOR Check: Ensure vendor owns this order
+        if (req.user.role === 'vendor' && Number(currentOrder.vendor_id || 1) !== Number(vId)) {
+            await conn.rollback();
+            conn.release();
+            return res.status(403).json({ message: "Forbidden: Cannot modify another vendor's order." });
+        }
+
         const currentStatus = currentOrder.status;
 
         // Validate allowed state transition
@@ -767,17 +1248,16 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
             version: newVersion,
             orderId: id,
             userId: currentOrder.user_id,
-            vendorId: currentOrder.vendor_id || 1,
+            vendorId: currentOrder.vendor_id || vId,
             status,
             cancelReason: cancelReason || null,
             token: currentOrder.token,
             updatedAt: Date.now()
         };
 
-        // Targeted emission to student, vendor, and order rooms
-        io.to('vendors').emit('order.status_changed', eventPayload);
-        io.to('vendors').emit('order_status_changed', updatedOrder);
-        io.to(`vendor:${currentOrder.vendor_id || 1}`).emit('order.status_changed', eventPayload);
+        // Targeted emission strictly to vendor room, student room, and order room
+        io.to(`vendor:${currentOrder.vendor_id || vId}`).emit('order.status_changed', eventPayload);
+        io.to(`vendor:${currentOrder.vendor_id || vId}`).emit('order_status_changed', updatedOrder);
         if (currentOrder.user_id) {
             io.to(`user:${currentOrder.user_id}`).emit('order.status_changed', eventPayload);
         }
@@ -787,7 +1267,7 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
         io.to(`order:${id}`).emit('order_status_changed', updatedOrder);
 
         if (stockRestored) {
-            broadcastInventoryUpdate();
+            broadcastInventoryUpdate(currentOrder.vendor_id || vId);
         }
 
         res.json(updatedOrder);
@@ -797,7 +1277,10 @@ app.put('/api/orders/:id/status', authorize(['vendor']), async (req, res) => {
         console.error('Error updating order status:', err);
         res.status(500).json({ message: 'Error updating order status.' });
     }
-});
+}
+
+app.put('/api/vendor/orders/:id/status', authorizeVendor, handleOrderStatusUpdate);
+app.put('/api/orders/:id/status', authorize(['vendor']), handleOrderStatusUpdate);
 
 // POST /api/reviews
 app.post('/api/reviews', authorize(['student']), async (req, res) => {
@@ -807,9 +1290,12 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
         return res.status(403).json({ message: 'You can only review your own orders.' });
 
     try {
+        const [orders] = await db.query('SELECT vendor_id FROM orders WHERE id = ?', [orderId]);
+        const vendorId = orders && orders.length > 0 ? Number(orders[0].vendor_id || 1) : 1;
+
         await db.query(
-            'INSERT INTO reviews (order_id, customer, items, rating, feedback, time) VALUES (?, ?, ?, ?, ?, ?)',
-            [orderId, customer, items, rating, feedback || null, time]
+            'INSERT INTO reviews (order_id, vendor_id, customer, items, rating, feedback, time) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [orderId, vendorId, customer, items, rating, feedback || null, time]
         );
         await db.query(
             'UPDATE orders SET rating = ?, feedback = ? WHERE id = ?',
@@ -818,6 +1304,7 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
 
         const newReview = {
             orderId,
+            vendorId,
             customer,
             items,
             rating: Number(rating),
@@ -828,14 +1315,13 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
         const eventPayload = {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'review.created',
-            vendorId: 1,
+            vendorId: vendorId,
             review: newReview,
             updatedAt: Date.now()
         };
 
-        io.to('vendor:1').emit('review.created', eventPayload);
-        io.to('vendors').emit('review.created', eventPayload);
-        io.to('vendors').emit('reviews_updated', newReview); // Legacy compatibility
+        io.to(`vendor:${vendorId}`).emit('review.created', eventPayload);
+        io.to(`vendor:${vendorId}`).emit('reviews_updated', newReview);
 
         res.status(201).json({ message: 'Review submitted successfully.' });
     } catch (err) {
@@ -891,7 +1377,7 @@ app.get('/api/support-tickets', async (req, res) => {
     }
 });
 
-// GET /api/settings
+// GET /api/settings (Legacy shop settings)
 app.get('/api/settings', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM settings');
@@ -913,15 +1399,17 @@ app.get('/api/settings', async (req, res) => {
     }
 });
 
-// PUT /api/settings/shop
+// PUT /api/settings/shop (Legacy vendor shop toggle)
 app.put('/api/settings/shop', authorize(['vendor']), async (req, res) => {
     const { shopOpen } = req.body;
     const value = shopOpen ? 'open' : 'closed';
+    const vId = req.user.vendorId || 1;
     try {
         await db.query('UPDATE settings SET setting_value = ? WHERE setting_key = "shop_status"', [value]);
+        await db.query('UPDATE vendors SET shop_status = ? WHERE id = ?', [value, vId]);
         if (!shopOpen)
             await db.query('UPDATE settings SET setting_value = "null" WHERE setting_key = "break_end_time"');
-        const settings = { shopOpen, breakEndTime: null };
+        const settings = { shopOpen, breakEndTime: null, vendorId: vId };
         broadcastShopStatus(settings);
         res.json(settings);
     } catch (err) {
@@ -937,13 +1425,15 @@ app.put('/api/settings/break', authorize(['vendor']), async (req, res) => {
         return res.status(400).json({ message: 'Invalid minutes.' });
 
     const breakEndTime = Date.now() + minutes * 60000;
+    const vId = req.user.vendorId || 1;
     try {
         await db.query('UPDATE settings SET setting_value = "open" WHERE setting_key = "shop_status"');
         await db.query(
             'UPDATE settings SET setting_value = ? WHERE setting_key = "break_end_time"',
             [String(breakEndTime)]
         );
-        const settings = { shopOpen: true, breakEndTime };
+        await db.query('UPDATE vendors SET shop_status = "open", break_end_time = ? WHERE id = ?', [String(breakEndTime), vId]);
+        const settings = { shopOpen: true, breakEndTime, vendorId: vId };
         broadcastShopStatus(settings);
         res.json(settings);
     } catch (err) {
@@ -954,11 +1444,13 @@ app.put('/api/settings/break', authorize(['vendor']), async (req, res) => {
 
 // DELETE /api/settings/break
 app.delete('/api/settings/break', authorize(['vendor']), async (req, res) => {
+    const vId = req.user.vendorId || 1;
     try {
         await db.query('UPDATE settings SET setting_value = "null" WHERE setting_key = "break_end_time"');
+        await db.query('UPDATE vendors SET break_end_time = NULL WHERE id = ?', [vId]);
         const [rows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "shop_status"');
-        const shopOpen = rows[0].setting_value === 'open';
-        const settings = { shopOpen, breakEndTime: null };
+        const shopOpen = rows[0]?.setting_value === 'open';
+        const settings = { shopOpen, breakEndTime: null, vendorId: vId };
         broadcastShopStatus(settings);
         res.json(settings);
     } catch (err) {
@@ -1004,9 +1496,15 @@ io.use(async (socket, next) => {
         const token = cookies.jwt;
         if (token) {
             const decoded = jwt.verify(token, JWT_SECRET);
+            if (decoded.role === 'vendor' && !decoded.vendorId) {
+                decoded.vendorId = Number(decoded.id || 1);
+            }
             if (!decoded.id && decoded.username) {
-                const [users] = await db.query('SELECT id FROM users WHERE username = ?', [decoded.username]);
-                if (users && users.length > 0) decoded.id = users[0].id;
+                const [users] = await db.query('SELECT id, vendor_id FROM users WHERE username = ?', [decoded.username]);
+                if (users && users.length > 0) {
+                    decoded.id = users[0].id;
+                    if (users[0].vendor_id) decoded.vendorId = Number(users[0].vendor_id);
+                }
             }
             socket.user = decoded;
         }
@@ -1021,12 +1519,13 @@ io.on('connection', (socket) => {
     if (socket.user && socket.user.id) {
         if (socket.user.role === 'student') {
             socket.join(`user:${socket.user.id}`);
-            socket.join(`student_${socket.user.username}`); // Legacy compatibility
+            socket.join(`student_${socket.user.username}`);
             console.log(`⚡ Authenticated Student Socket ${socket.id} (User ID: ${socket.user.id}) joined user:${socket.user.id}`);
         } else if (socket.user.role === 'vendor') {
-            socket.join(`vendor:${socket.user.id}`);
-            socket.join('vendors'); // Legacy compatibility
-            console.log(`⚡ Authenticated Vendor Socket ${socket.id} (Vendor ID: ${socket.user.id}) joined vendor:${socket.user.id}`);
+            const vendorId = socket.user.vendorId || socket.user.id || 1;
+            socket.join(`vendor:${vendorId}`);
+            socket.join(`user:${socket.user.id}`);
+            console.log(`⚡ Authenticated Vendor Socket ${socket.id} joined vendor:${vendorId}`);
         }
     }
 
@@ -1034,12 +1533,20 @@ io.on('connection', (socket) => {
     socket.join('menu:1');
     socket.join('shop:main');
 
-    // Secure Order Room Joining (Allows student owner or vendor to join order room)
+    // Secure Order Room Joining (Allows student owner or assigned vendor to join order room)
     socket.on('join_order', async (orderId) => {
         if (!orderId || typeof orderId !== 'string') return;
         if (socket.user) {
             if (socket.user.role === 'vendor') {
-                socket.join(`order:${orderId}`);
+                try {
+                    const [orders] = await db.query('SELECT vendor_id FROM orders WHERE id = ?', [orderId]);
+                    if (orders && orders.length > 0) {
+                        const vId = socket.user.vendorId || socket.user.id || 1;
+                        if (Number(orders[0].vendor_id || 1) === Number(vId)) {
+                            socket.join(`order:${orderId}`);
+                        }
+                    }
+                } catch (e) {}
             } else {
                 try {
                     const [orders] = await db.query('SELECT user_id, customer FROM orders WHERE id = ?', [orderId]);
@@ -1054,31 +1561,22 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Room access validation: Block vendor from snooping other vendor rooms
     socket.on('join_room', (room) => {
-        if (room) socket.join(room);
-    });
-
-    // Client emitted order placement
-    socket.on('place_order', (payload) => {
-        if (!payload) return;
-        const eventPayload = {
-            eventId: 'evt_' + crypto.randomUUID(),
-            event: 'order.created',
-            orderId: payload.id,
-            order: payload,
-            version: 1,
-            updatedAt: Date.now()
-        };
-        io.to('vendors').emit('orders_updated', payload);
-        io.to('vendor:1').emit('order.created', eventPayload);
-        io.emit('orders_updated', payload);
-        io.emit('order.created', eventPayload);
+        if (!room || typeof room !== 'string') return;
+        if (room.startsWith('vendor:')) {
+            if (!socket.user || socket.user.role !== 'vendor') return;
+            const authorizedRoom = `vendor:${socket.user.vendorId || socket.user.id || 1}`;
+            if (room !== authorizedRoom) return; // Prevent unauthorized room join
+        }
+        socket.join(room);
     });
 
     // Client emitted order status update
     socket.on('update_order_status', (payload) => {
         if (!payload) return;
         const orderId = payload.id || payload.orderId;
+        const vendorId = payload.vendorId || (socket.user && socket.user.vendorId) || 1;
         const eventPayload = {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'order.status_changed',
@@ -1088,45 +1586,31 @@ io.on('connection', (socket) => {
             cancelReason: payload.cancelReason || null,
             token: payload.token || null,
             version: payload.version || 2,
+            vendorId: vendorId,
             updatedAt: Date.now()
         };
-        io.to('vendors').emit('orders_updated', payload);
-        io.to('vendor:1').emit('order.status_changed', eventPayload);
+        io.to(`vendor:${vendorId}`).emit('orders_updated', payload);
+        io.to(`vendor:${vendorId}`).emit('order.status_changed', eventPayload);
         if (payload.customer) {
             io.to(`student_${payload.customer}`).emit('order_status_changed', payload);
+            io.to(`student_${payload.customer}`).emit('order.status_changed', eventPayload);
         }
         if (payload.userId) {
             io.to(`user:${payload.userId}`).emit('order.status_changed', eventPayload);
         }
-        io.emit('order_status_changed', payload);
-        io.emit('order.status_changed', eventPayload);
+        io.to(`order:${orderId}`).emit('order_status_changed', payload);
+        io.to(`order:${orderId}`).emit('order.status_changed', eventPayload);
     });
 
     // Client emitted inventory update
     socket.on('update_inventory', (payload) => {
+        const vId = (socket.user && socket.user.vendorId) || 1;
         io.emit('inventory_updated', payload);
         io.emit('inventory.updated', {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'inventory.updated',
+            vendorId: vId,
             inventory: payload,
-            updatedAt: Date.now()
-        });
-    });
-
-    // Client emitted reviews update
-    socket.on('update_reviews', (payload) => {
-        io.to('vendors').emit('reviews_updated', payload);
-        io.to('vendor:1').emit('review.created', {
-            eventId: 'evt_' + crypto.randomUUID(),
-            event: 'review.created',
-            review: payload,
-            updatedAt: Date.now()
-        });
-        io.emit('reviews_updated', payload);
-        io.emit('review.created', {
-            eventId: 'evt_' + crypto.randomUUID(),
-            event: 'review.created',
-            review: payload,
             updatedAt: Date.now()
         });
     });
@@ -1134,7 +1618,7 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {});
 });
 
-async function broadcastInventoryUpdate() {
+async function broadcastInventoryUpdate(vendorId = null) {
     try {
         const [items] = await db.query('SELECT * FROM inventory');
         const formatted = items.map(item => ({
@@ -1144,19 +1628,20 @@ async function broadcastInventoryUpdate() {
             stock:         Number(item.stock),
             sold:          Number(item.sold),
             isSpecial:     Boolean(item.is_special),
-            originalPrice: item.original_price ? Number(item.original_price) : null
+            originalPrice: item.original_price ? Number(item.original_price) : null,
+            vendorId:      Number(item.vendor_id || 1)
         }));
 
         const eventPayload = {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'inventory.updated',
-            vendorId: 1,
+            vendorId: vendorId,
             inventory: formatted,
             updatedAt: Date.now()
         };
 
         io.emit('inventory.updated', eventPayload);
-        io.emit('inventory_updated', formatted); // Legacy compatibility
+        io.emit('inventory_updated', formatted);
     } catch (e) {
         io.emit('inventory_updated');
     }
@@ -1166,12 +1651,13 @@ function broadcastShopStatus(settings) {
     const eventPayload = {
         eventId: 'evt_' + crypto.randomUUID(),
         event: 'shop.status_changed',
+        vendorId: settings ? settings.vendorId : 1,
         shopOpen: settings ? settings.shopOpen : true,
         breakEndTime: settings ? settings.breakEndTime : null,
         updatedAt: Date.now()
     };
     io.emit('shop.status_changed', eventPayload);
-    io.emit('shop_status_changed', settings); // Legacy compatibility
+    io.emit('shop_status_changed', settings);
 }
 
 // ── NODEMAILER ───────────────────────────────────────────────────────────────
@@ -1215,24 +1701,21 @@ async function startServer() {
         await db.initDB();
         await initNodemailer();
 
-        const listenOnPort = (port) => {
-            server.listen(port, '0.0.0.0', () => {
-                console.log(`\n=================================================================`);
-                console.log(`  🍔 SNACK TIME Backend Server Active!`);
-                console.log(`  🏠 Local URL:    http://localhost:${port}`);
-                console.log(`  📱 Network URL:  http://192.168.1.3:${port}`);
-                console.log(`=================================================================\n`);
-            }).on('error', (err) => {
-                if ((err.code === 'EACCES' || err.code === 'EADDRINUSE') && port === PORT) {
-                    console.log(`Port ${PORT} busy. Trying ${ALT_PORT}...`);
-                    listenOnPort(ALT_PORT);
-                } else {
-                    console.error('Server failed to start:', err);
-                }
-            });
-        };
+        server.on('error', (err) => {
+            if ((err.code === 'EACCES' || err.code === 'EADDRINUSE') && !server.listening) {
+                console.log(`Port ${PORT} busy. Trying ${ALT_PORT}...`);
+                try { server.listen(ALT_PORT, '0.0.0.0'); } catch(e) {}
+            } else {
+                console.error('Server error:', err.message);
+            }
+        });
 
-        listenOnPort(PORT);
+        server.listen(PORT, '0.0.0.0', () => {
+            console.log(`\n=================================================================`);
+            console.log(`  🍔 SNACK TIME Backend Server Active on port ${PORT}!`);
+            console.log(`  🏠 Local URL:    http://localhost:${PORT}`);
+            console.log(`=================================================================\n`);
+        });
 
         // Keep-Alive Self-Ping: Prevents Render free instances from sleeping during break times
         const PING_INTERVAL = 10 * 60 * 1000; // Every 10 mins

@@ -39,7 +39,7 @@
 
     <!-- PWA Service Worker Registration & Instant Auto-Update -->
     <script>
-    window.SNACKTIME_VERSION = '1.0.11.1788584819463';
+    window.SNACKTIME_VERSION = '2.0.0.1788600000000';
 
     (function () {
       if (!('serviceWorker' in navigator)) return;
@@ -261,6 +261,18 @@
 
                 <!-- MENU TAB -->
                 <div id="customer-menu-view" class="customer-view active">
+                    <!-- Stall / Vendor Filter Bar -->
+                    <div class="stall-filter-container" style="margin-bottom: 1.25rem; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; padding-bottom: 4px;">
+                        <div style="display: flex; gap: 8px;" id="stall-filters-list">
+                            <button class="filter-chip active" onclick="setStallFilter('all')" id="stall-filter-all">🏪 All Stalls</button>
+                            <button class="filter-chip" onclick="setStallFilter(1)" id="stall-filter-1">Main Amenity</button>
+                            <button class="filter-chip" onclick="setStallFilter(2)" id="stall-filter-2">Mario Tea Corner</button>
+                            <button class="filter-chip" onclick="setStallFilter(3)" id="stall-filter-3">Only Cane</button>
+                            <button class="filter-chip" onclick="setStallFilter(4)" id="stall-filter-4">Cafe Corner</button>
+                            <button class="filter-chip" onclick="setStallFilter(5)" id="stall-filter-5">Stationery Store</button>
+                        </div>
+                    </div>
+
                     <div id="specials-section" style="margin-bottom: 2rem;">
                         <h3 style="color: var(--secondary); display:flex; align-items:center; gap:8px;">🌟 Today's Specials & Offers</h3>
                         <div id="specials-grid" class="grid-container"></div>
@@ -513,8 +525,8 @@
                             <i data-lucide="store" style="width:20px;height:20px;"></i>
                         </div>
                         <div>
-                            <h3 style="font-size:16px;margin:0;">SNACK TIME</h3>
-                            <span class="text-caption">Vendor Panel</span>
+                            <h3 style="font-size:15px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;" id="vendor-sidebar-title">SNACK TIME</h3>
+                            <span class="text-caption" id="vendor-sidebar-subtitle">Vendor Panel</span>
                         </div>
                     </div>
                     <div class="vendor-nav-list">
@@ -563,7 +575,7 @@
                             <button class="icon-btn" onclick="showProfile()" style="padding:0; width:40px; height:40px; justify-content:center; border:none; background:transparent;">
                                 <i data-lucide="menu" style="width:24px; height:24px;"></i>
                             </button>
-                            <h2 style="font-size:18px; font-weight:700; margin:0;">Orders</h2>
+                            <h2 style="font-size:16px; font-weight:700; margin:0;" id="vendor-mobile-heading">Live Orders</h2>
                         </div>
                         <button class="outline-btn" onclick="filterOrders('all')" style="min-height:36px; padding:0 12px; font-size:13px; border-radius:var(--radius-pill);">
                             <i data-lucide="sliders-horizontal" style="width:14px; height:14px; margin-right:4px;"></i> Filters
@@ -573,7 +585,7 @@
                     <!-- Desktop Vendor Page Header -->
                     <div class="vendor-desktop-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                         <div>
-                            <h2 style="font-size:18px; font-weight:700; margin:0; line-height:1.3;">Today's overview</h2>
+                            <h2 style="font-size:18px; font-weight:700; margin:0; line-height:1.3;" id="vendor-dashboard-heading">Today's overview</h2>
                             <span id="vendor-current-date" class="text-meta" style="font-size:12px; color:var(--text-secondary);">Wednesday, Aug 12</span>
                         </div>
                         <button class="outline-btn" style="min-height:36px; padding:0 14px; font-size:13px; border-radius:var(--radius-sm);" onclick="filterOrders('all')">

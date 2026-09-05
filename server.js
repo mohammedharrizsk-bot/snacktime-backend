@@ -531,8 +531,23 @@ app.get('/api/vendors', async (req, res) => {
 
 // ──────────────────────────────────────────────────────────────
 // PROTECTED API ROUTES (require JWT + CSRF)
+// Public routes explicitly exempted below before this middleware.
 // ──────────────────────────────────────────────────────────────
-app.use('/api', authenticate, csrfProtection);
+const PUBLIC_API_PATHS = [
+    '/api/health', '/api/csrf-token', '/api/login', '/api/logout',
+    '/api/register', '/api/forgot-password', '/api/reset-password-confirm',
+    '/api/vendors'
+];
+app.use('/api', (req, res, next) => {
+    const path = req.path;
+    if (PUBLIC_API_PATHS.some(p => path === p || path.startsWith(p + '/'))) return next();
+    authenticate(req, res, next);
+});
+app.use('/api', (req, res, next) => {
+    const path = req.path;
+    if (PUBLIC_API_PATHS.some(p => path === p || path.startsWith(p + '/'))) return next();
+    csrfProtection(req, res, next);
+});
 
 // ==============================================================
 // VENDOR DEDICATED ISOLATED API ENDPOINTS

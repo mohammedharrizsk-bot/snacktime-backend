@@ -1459,6 +1459,10 @@ function register() {
         }
 
         if (!res.ok && contentType.includes('application/json')) {
+            // If register endpoint itself returns 401/500 (backend middleware issue), fall to local fallback
+            if (res.status === 401 || res.status === 403 || res.status === 500) {
+                throw new Error('API_FALLBACK');
+            }
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
@@ -1545,6 +1549,11 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
         }
 
         if (!res.ok && contentType.includes('application/json')) {
+            // If login endpoint itself returns 401/403/500, it means the backend is
+            // running old code or has a server error — fall through to local fallback
+            if (res.status === 401 || res.status === 403 || res.status === 500) {
+                throw new Error('API_FALLBACK');
+            }
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
@@ -1578,7 +1587,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             } catch (e) {}
         }
 
-        // If non-JSON or static hosting 404, fallback to local accounts
+        // If non-JSON, static hosting 404, or unhandled error — fallback to local accounts
         throw new Error('API_FALLBACK');
     })
     .catch(err => {

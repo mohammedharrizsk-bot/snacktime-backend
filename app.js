@@ -3,6 +3,25 @@ const SERVER_BASE_URL = window.SNACKTIME_SERVER_URL || localStorage.getItem('cus
 
 let csrfToken = '';
 
+// Vendor ID → Shop Name mapping (must be defined before any login/auth functions)
+const VENDOR_NAMES_MAP = {
+    1: 'Main Amenity',
+    2: 'Mario Tea Corner',
+    3: 'Only Cane',
+    4: 'Cafe Corner',
+    5: 'Stationery Store'
+};
+
+function safeCreateIcons() {
+    if (typeof lucide !== 'undefined' && lucide && typeof lucide.createIcons === 'function') {
+        try {
+            lucide.createIcons();
+        } catch (e) {
+            console.warn('Lucide icon render notice:', e);
+        }
+    }
+}
+
 async function safeParseJson(res) {
     if (!res) throw new Error('API_UNAVAILABLE');
     const contentType = res.headers ? (res.headers.get('content-type') || '') : '';
@@ -88,6 +107,7 @@ function initSocketConnection() {
     if (typeof io === 'undefined') return;
     if (appSocket && appSocket.connected) return;
 
+    try {
         const socketOpts = {
             withCredentials: true,
             transports: ['websocket', 'polling'],
@@ -423,7 +443,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '2.0.0.1788600000000';
+const APP_VERSION = '3.0.0.1788599389305';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -883,7 +903,7 @@ function initTheme() {
     document.documentElement.setAttribute('data-theme', savedTheme);
     const btn = $('theme-toggle');
     if (btn) btn.innerHTML = savedTheme === 'dark' ? '<i data-lucide="sun"></i>' : '<i data-lucide="moon"></i>';
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function toggleTheme() {
@@ -894,7 +914,7 @@ function toggleTheme() {
     const btn = $('theme-toggle');
     if (btn) btn.innerHTML = newTheme === 'dark' ? '<i data-lucide="sun"></i>' : '<i data-lucide="moon"></i>';
     showNotification(newTheme === 'dark' ? '🌙 Switched to Dark Mode' : '☀️ Switched to Light Mode');
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= NOTIFICATIONS =========================
@@ -1174,7 +1194,7 @@ function switchCustomerTab(tab) {
     if (tab === 'favourites') renderFavourites();
     if (tab === 'recents') renderRecents();
     if (tab === 'history') renderInlineOrderHistory();
-    if (tab === 'about') lucide.createIcons();
+    if (tab === 'about') safeCreateIcons();
 }
 
 function switchVendorTab(view) {
@@ -1206,9 +1226,9 @@ function switchVendorTab(view) {
     if (view === 'analytics') renderAnalyticsChart();
     if (view === 'feedback') renderVendorReviews();
     if (view === 'settings') renderVendorSettings();
-    if (view === 'about') lucide.createIcons();
+    if (view === 'about') safeCreateIcons();
     renderVendorKPIs();
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function renderVendorKPIs() {
@@ -1806,7 +1826,7 @@ function toggleShopOpen() {
             ? '<i data-lucide="x-circle" style="vertical-align:middle;width:16px;"></i> Close Shop'
             : '<i data-lucide="check-circle" style="vertical-align:middle;width:16px;"></i> Open Shop';
         btn.style.background = shopOpen ? 'var(--danger)' : 'var(--success)';
-        lucide.createIcons();
+        safeCreateIcons();
     }
     showNotification(shopOpen ? '✅ Shop is now OPEN' : '🔴 Shop is now CLOSED');
     checkShopStatus();
@@ -1969,7 +1989,7 @@ function renderVendorSettings() {
         if (vendorSelector) vendorSelector.value = lang2;
     }, 50);
     
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= PAYMENT CRASH RECOVERY =========================
@@ -2102,13 +2122,8 @@ function updateOrderStatus(orderId, newStatus, cancelReason) {
 }
 
 // ========================= MENU & STALL FILTERING =========================
-const VENDOR_NAMES_MAP = {
-    1: 'Main Amenity',
-    2: 'Mario Tea Corner',
-    3: 'Only Cane',
-    4: 'Cafe Corner',
-    5: 'Stationery Store'
-};
+// (VENDOR_NAMES_MAP is defined at the top of this file)
+
 
 let activeVendorFilter = 'all';
 
@@ -2246,7 +2261,7 @@ function renderMenu() {
             <i data-lucide="utensils-crossed" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i>
             <p>No items found for this stall right now. Check back soon!</p>
         </div>`;
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= FAVOURITES =========================
@@ -2270,11 +2285,11 @@ function renderFavourites() {
     const favItems = inventory.filter(i => favourites.includes(i.id));
     if (favItems.length === 0) {
         grid.innerHTML = `<div class="empty-state"><i data-lucide="heart-crack" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No favourites yet! Tap the heart on a snack you love.</p></div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         return;
     }
     grid.innerHTML = favItems.map(item => buildCardHtml(item)).join('');
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= RECENTS =========================
@@ -2292,7 +2307,7 @@ function renderRecents() {
     if (!grid) return;
     if (recents.length === 0) {
         grid.innerHTML = `<div class="empty-state"><i data-lucide="clock-3" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No recent orders. Treat yourself today!</p></div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         return;
     }
     const html = recents.map(r => {
@@ -2300,7 +2315,7 @@ function renderRecents() {
         return live ? buildCardHtml(live) : '';
     }).join('');
     grid.innerHTML = html || `<div class="empty-state"><i data-lucide="frown" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>Your recent items are no longer available.</p></div>`;
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= CART =========================
@@ -2366,7 +2381,7 @@ function showCart() {
     const total = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
     $('cart-total').innerText = formatCurrency(total);
     $('cart-modal').classList.add('active');
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function hideCart() { $('cart-modal').classList.remove('active'); }
@@ -2496,7 +2511,7 @@ function initiateCounterPayment() {
     if (counterEl) counterEl.style.display = 'block';
     const counterAmtEl = $('counter-pay-amount');
     if (counterAmtEl) counterAmtEl.innerText = formatCurrency(total);
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function cancelCounterPayment() {
@@ -2713,7 +2728,7 @@ function updateTrackingUI(status) {
     const el = $('tracking-status-text');
     if (el) {
         el.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${statusIcons[resolvedStatus] || ''} ${statusMessages[resolvedStatus] || resolvedStatus}</span>`;
-        lucide.createIcons();
+        safeCreateIcons();
     }
 
     // ── LIVE QUEUE POSITION & WAIT TIME ESTIMATION ────────────────────────────
@@ -2989,7 +3004,7 @@ function renderVendorOrders() {
     if (filtered.length === 0) {
         const emptyTxt = d.vendor_no_orders || 'All caught up! No orders to show right now.';
         container.innerHTML = `<div class="empty-state"><i data-lucide="clipboard-check" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>${emptyTxt}</p></div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         renderVendorKPIs();
         return;
     }
@@ -3078,7 +3093,7 @@ function renderVendorOrders() {
         </div>`;
     }).join('');
 
-    lucide.createIcons();
+    safeCreateIcons();
     attachSwipeGesturesToCards();
 }
 
@@ -3192,7 +3207,7 @@ function renderVendorOrderHistory() {
                 <i data-lucide="history" style="width:48px;height:48px;margin-bottom:0.5rem;opacity:0.5;"></i>
                 <p>No historical orders found matching your search.</p>
             </div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         return;
     }
 
@@ -3318,7 +3333,7 @@ function renderVendorOrderHistory() {
     });
 
     container.innerHTML = html;
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 
@@ -3680,7 +3695,7 @@ function renderVendorReviews() {
     if (!container) return;
     if (allReviews.length === 0) {
         container.innerHTML = `<div class="empty-state"><i data-lucide="message-square-dashed" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No reviews yet. Feed some students to get feedback!</p></div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         return;
     }
     const avgAll = (allReviews.reduce((s, r) => s + r.rating, 0) / allReviews.length).toFixed(1);
@@ -3699,7 +3714,7 @@ function renderVendorReviews() {
                 <p style="margin:0;color:var(--text-primary);">${r.feedback ? escapeHtml(r.feedback) : '<em style="color:var(--text-secondary)">No comment</em>'}</p>
                 <div class="review-meta">${escapeHtml(r.items)} • ${escapeHtml(r.time)}</div>
             </div>`).join('')}`;
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 // ========================= ANALYTICS CHART =========================
@@ -3744,7 +3759,7 @@ function renderInlineOrderHistory() {
 
     if (myOrders.length === 0) {
         container.innerHTML = `<div class="empty-state"><i data-lucide="receipt" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No orders yet! Go grab something delicious.</p></div>`;
-        lucide.createIcons();
+        safeCreateIcons();
         return;
     }
 
@@ -3774,7 +3789,7 @@ function renderInlineOrderHistory() {
             </div>
         </div>`;
     }).join('');
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function loadOrderHistory() { /* handled by Socket.io real-time listener */ }
@@ -3794,7 +3809,7 @@ function openForgotPassword(defaultUser = '') {
     if (step2) step2.style.display = 'none';
     const modal = $('forgot-modal');
     if (modal) modal.classList.add('active');
-    if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+    if (typeof lucide !== 'undefined' && lucide.createIcons) safeCreateIcons();
 }
 
 function closeForgotPassword() {
@@ -3835,7 +3850,7 @@ function sendPasswordResetEmail() {
         if (targetUname) targetUname.innerText = pendingResetUsername;
         if (step1) step1.style.display = 'none';
         if (step2) step2.style.display = 'block';
-        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        if (typeof lucide !== 'undefined' && lucide.createIcons) safeCreateIcons();
     })
     .catch(err => {
         if (submitBtn) { submitBtn.innerText = 'Continue'; submitBtn.disabled = false; }
@@ -3846,7 +3861,7 @@ function sendPasswordResetEmail() {
         if (targetUname) targetUname.innerText = pendingResetUsername;
         if (step1) step1.style.display = 'none';
         if (step2) step2.style.display = 'block';
-        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        if (typeof lucide !== 'undefined' && lucide.createIcons) safeCreateIcons();
     });
 }
 
@@ -3956,14 +3971,14 @@ function showProfile() {
         if (emailRow) emailRow.style.display = 'none';
     }
     $('profile-modal').classList.add('active');
-    lucide.createIcons();
+    safeCreateIcons();
 }
 
 function hideProfile() { $('profile-modal').classList.remove('active'); }
 
 // ========================= INIT =========================
 initTheme();
-lucide.createIcons();
+safeCreateIcons();
 
 // Refresh vendor orders display every 60 seconds
 setInterval(() => {
@@ -4000,7 +4015,7 @@ function installPWA() {
 
 // Auto-login check and auth initialization on page load
 window.addEventListener('DOMContentLoaded', () => {
-    lucide.createIcons();
+    safeCreateIcons();
     
     // Auth input Enter key listeners
     const authInputs = ['username', 'password', 'email'];

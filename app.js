@@ -1548,9 +1548,9 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
-                    if (errData.message === 'Username not found.') {
+                    if (errData.message.includes('Username not found')) {
                         const localUsers = JSON.parse(localStorage.getItem('snacktime_users') || '[]');
-                        const localFound = localUsers.find(u => u.username.toLowerCase() === lowerUser);
+                        const localFound = localUsers.find(u => u.username.toLowerCase() === lowerUser || (u.email && u.email.toLowerCase() === lowerUser));
                         if (localFound && localFound.password === passwordInput) {
                             apiFetch('/api/register', {
                                 method: 'POST',
@@ -1570,9 +1570,7 @@ function loginWithCredentials(usernameInput, passwordInput, role) {
                     }
                     if (btn) { btn.innerText = 'Login'; btn.disabled = false; }
                     if (errorMsg) {
-                        errorMsg.innerText = errData.message === 'Username not found.'
-                            ? "Username not found. Please click 'Register' above to create your account."
-                            : errData.message;
+                        errorMsg.innerText = errData.message;
                         errorMsg.style.display = 'block';
                     }
                     return;

@@ -629,11 +629,11 @@ async function seedPgDatabase() {
 
     // 2. Seed 5 Vendor Users + Aliases + Student
     for (const u of SEEDED_VENDOR_USERS) {
-        const uRes = await pgPool.query('SELECT id FROM users WHERE LOWER(username) = $1 OR id = $2', [u.username.toLowerCase(), u.id]);
+        const uRes = await pgPool.query('SELECT id FROM users WHERE LOWER(username) = $1', [u.username.toLowerCase()]);
         if (uRes.rows.length === 0) {
             await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', [u.username, u.email, u.password_hash, u.role, u.vendor_id]);
         } else {
-            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2 WHERE id = $3 OR LOWER(username) = $4', [u.password_hash, u.vendor_id, u.id, u.username.toLowerCase()]);
+            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2, role = $3, email = $4 WHERE LOWER(username) = $5', [u.password_hash, u.vendor_id, u.role, u.email, u.username.toLowerCase()]);
         }
     }
 
@@ -652,14 +652,16 @@ async function seedPgDatabase() {
         if (aRes.rows.length === 0) {
             await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', [a.username, a.email, a.hash, 'vendor', a.vendor_id]);
         } else {
-            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2 WHERE LOWER(username) = $3', [a.hash, a.vendor_id, a.username]);
+            await pgPool.query('UPDATE users SET password_hash = $1, vendor_id = $2, role = $3 WHERE LOWER(username) = $4', [a.hash, a.vendor_id, 'vendor', a.username]);
         }
     }
 
     // Student account
-    const sRes = await pgPool.query('SELECT id FROM users WHERE username = $1', ['student']);
+    const sRes = await pgPool.query('SELECT id FROM users WHERE LOWER(username) = $1', ['student']);
     if (sRes.rows.length === 0) {
         await pgPool.query('INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES ($1, $2, $3, $4, $5)', ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student', null]);
+    } else {
+        await pgPool.query('UPDATE users SET password_hash = $1, role = $2, vendor_id = NULL WHERE LOWER(username) = $3', [DEFAULT_STUDENT_HASH, 'student', 'student']);
     }
 
     // 3. Seed partitioned inventory across 5 vendors
@@ -852,11 +854,16 @@ async function seedDatabase() {
     }
 
     // Student
-    const [sRows] = await pool.query('SELECT id FROM users WHERE username = "student"');
+    const [sRows] = await pool.query('SELECT id FROM users WHERE LOWER(username) = "student"');
     if (sRows.length === 0) {
         await pool.query(
             'INSERT INTO users (username, email, password_hash, role, vendor_id) VALUES (?, ?, ?, ?, ?)',
             ['student', 'student@sece.ac.in', DEFAULT_STUDENT_HASH, 'student', null]
+        );
+    } else {
+        await pool.query(
+            'UPDATE users SET password_hash = ?, role = "student", vendor_id = NULL WHERE LOWER(username) = "student"',
+            [DEFAULT_STUDENT_HASH]
         );
     }
 

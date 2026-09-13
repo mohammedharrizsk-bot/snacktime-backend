@@ -174,6 +174,7 @@ function authenticateSocketConnection() {
             vendorId: user.vendorId,
             userId: user.id
         };
+        appSocket.auth = payload;
         if (appSocket.connected) {
             appSocket.emit('auth', payload);
         } else {
@@ -481,7 +482,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '3.1.0.1788626259162';
+const APP_VERSION = '3.1.0.1789312486578';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -623,12 +624,17 @@ let allOrders = [];
 let _lastOrdersSig = '';
 let _lastInventorySig = '';
 let _lastSettingsSig = '';
+let _lastReviewsSig = '';
 let _isSyncing = false;
+let _syncQueued = false;
 let _lifecycleListenersAttached = false;
 
 // ── CORE SYNC ENGINE (Reconciles REST API + Cache across all devices) ────────
 async function syncLiveOrdersAndInventory(role) {
-    if (_isSyncing) return;
+    if (_isSyncing) {
+        _syncQueued = true;
+        return;
+    }
     _isSyncing = true;
     try {
         const activeRole = role || (currentUser ? currentUser.role : null);
@@ -640,12 +646,14 @@ async function syncLiveOrdersAndInventory(role) {
         const ordersUrl = (activeRole === 'vendor') ? '/api/vendor/orders' : '/api/orders';
         const invUrl = (activeRole === 'vendor') ? '/api/vendor/inventory' : '/api/inventory';
         const setUrl = (activeRole === 'vendor') ? '/api/vendor/status' : '/api/settings';
+        const revUrl = (activeRole === 'vendor') ? '/api/vendor/reviews' : '/api/reviews';
 
         // Fetch in parallel for maximum speed & lowest latency
-        const [ordersRes, inventoryRes, settingsRes] = await Promise.allSettled([
+        const [ordersRes, inventoryRes, settingsRes, reviewsRes] = await Promise.allSettled([
             apiFetch(ordersUrl),
             apiFetch(invUrl),
-            apiFetch(setUrl)
+            apiFetch(setUrl),
+            apiFetch(revUrl)
         ]);
 
         // 1. Process Live Orders
@@ -676,9 +684,13 @@ async function syncLiveOrdersAndInventory(role) {
 
                         // Automatically update active tracking screen
                         if (currentOrder && currentOrder.id) {
-                            const updated = allOrders.find(o => o.id === currentOrder.id);
+                            const updated = allOrders.find(o => 
+                                o.id === currentOrder.id || 
+                                (currentOrder.masterOrderId && o.id === currentOrder.masterOrderId) ||
+                                (o.masterOrderId && o.masterOrderId === currentOrder.id) ||
+                                (o.id && currentOrder.id && (o.id.startsWith(currentOrder.id + '-') || currentOrder.id.startsWith(o.id + '-')))
+                            );
                             if (updated && updated.status !== currentOrder.status) {
-                                const oldStatus = currentOrder.status;
                                 currentOrder.status = updated.status;
                                 currentOrder.version = updated.version || (currentOrder.version + 1);
                                 if (updated.token) currentOrder.token = updated.token;
@@ -747,6 +759,20 @@ async function syncLiveOrdersAndInventory(role) {
                 }
             }
         }
+
+        // 4. Process Reviews & Feedback
+        if (reviewsRes && reviewsRes.status === 'fulfilled' && reviewsRes.value.ok) {
+            const rawReviews = await safeParseJson(reviewsRes.value);
+            if (Array.isArray(rawReviews)) {
+                const newRevSig = JSON.stringify(rawReviews.map(r => r.id + ':' + r.rating));
+                if (newRevSig !== _lastReviewsSig) {
+                    _lastReviewsSig = newRevSig;
+                    allReviews = rawReviews;
+                    try { localStorage.setItem('snacktime_reviews', JSON.stringify(allReviews)); } catch (e) {}
+                    if (activeRole === 'vendor') renderVendorReviews();
+                }
+            }
+        }
     } catch (e) {
         // Fallback for static/offline mock mode
         const savedOrders = (() => { try { return JSON.parse(localStorage.getItem('snacktime_orders') || '[]'); } catch { return []; } })();
@@ -755,13 +781,17 @@ async function syncLiveOrdersAndInventory(role) {
             liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
             if (role === 'vendor') {
                 renderVendorOrders();
-                updateVendorOrderBadge(liveOrders.length);
+                updateVendorOrderBadge();
             } else if (role === 'student') {
                 renderInlineOrderHistory();
             }
         }
     } finally {
         _isSyncing = false;
+        if (_syncQueued) {
+            _syncQueued = false;
+            setTimeout(() => syncLiveOrdersAndInventory(role), 150);
+        }
     }
 }
 
@@ -820,7 +850,11 @@ function startDatabaseSync(role) {
                     announceOrderStatus(order, 'pending');
                 }
             } else if (activeRole === 'student') {
-                renderInlineOrderHistory();
+                const myUname = (currentUser && currentUser.username || '').toLowerCase();
+                const isMyOrder = (!order.customer) || ((order.customer || '').toLowerCase() === myUname) || (currentUser && currentUser.id && order.userId === currentUser.id);
+                if (isMyOrder) {
+                    renderInlineOrderHistory();
+                }
             }
         };
 
@@ -851,9 +885,17 @@ function startDatabaseSync(role) {
             liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
             if (activeRole === 'student') {
-                const matchesCurrentOrder = currentOrder && (currentOrder.id === orderId || orderId.startsWith(currentOrder.id + '-') || (currentOrder.id && currentOrder.id.startsWith(orderId)));
-                const isMyOrder = (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
-                                  (currentUser && eventPayload.customer === currentUser.username) ||
+                const matchesCurrentOrder = currentOrder && (
+                    currentOrder.id === orderId ||
+                    orderId.startsWith(currentOrder.id + '-') ||
+                    (currentOrder.masterOrderId && (currentOrder.masterOrderId === eventPayload.masterOrderId || currentOrder.masterOrderId === orderId)) ||
+                    (eventPayload.masterOrderId && (eventPayload.masterOrderId === currentOrder.id || eventPayload.masterOrderId === currentOrder.masterOrderId)) ||
+                    (currentOrder.id && currentOrder.id.startsWith(orderId))
+                );
+                const orderCust = (eventPayload.customer || (targetOrder && targetOrder.customer) || '').toLowerCase();
+                const myUname = (currentUser && currentUser.username || '').toLowerCase();
+                const isMyOrder = (orderCust && orderCust === myUname) ||
+                                  (currentUser && currentUser.id && eventPayload.userId === currentUser.id) ||
                                   matchesCurrentOrder;
 
                 if (isMyOrder) {
@@ -897,7 +939,20 @@ function startDatabaseSync(role) {
         const handleInventoryUpdated = (eventPayload) => {
             const newInventory = (eventPayload && eventPayload.inventory) ? eventPayload.inventory : eventPayload;
             if (Array.isArray(newInventory) && newInventory.length > 0) {
-                inventory = newInventory;
+                if (eventPayload && eventPayload.vendorId) {
+                    // Vendor-specific partial update: merge items into global catalog
+                    newInventory.forEach(updatedItem => {
+                        const idx = inventory.findIndex(i => Number(i.id) === Number(updatedItem.id));
+                        if (idx !== -1) {
+                            inventory[idx] = { ...inventory[idx], ...updatedItem };
+                        } else {
+                            inventory.push(updatedItem);
+                        }
+                    });
+                } else {
+                    inventory = newInventory;
+                }
+                try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
                 applyDailySpecials();
                 if (activeRole === 'student') renderMenu();
                 if (activeRole === 'vendor') renderInventory();
@@ -916,6 +971,22 @@ function startDatabaseSync(role) {
             checkShopStatus();
         };
 
+        const handleReviewCreated = (eventPayload) => {
+            const rev = (eventPayload && eventPayload.review) ? eventPayload.review : eventPayload;
+            if (!rev) return;
+            const existingIdx = allReviews.findIndex(r => (r.id && r.id === rev.id) || (r.orderId && r.orderId === rev.orderId));
+            if (existingIdx !== -1) {
+                allReviews[existingIdx] = rev;
+            } else {
+                allReviews.unshift(rev);
+            }
+            try { localStorage.setItem('snacktime_reviews', JSON.stringify(allReviews)); } catch (e) {}
+            if (activeRole === 'vendor') {
+                renderVendorReviews();
+                triggerLiveNotification('⭐ NEW REVIEW RECEIVED!', `${rev.customer || 'Student'} rated ${rev.rating}★: "${rev.feedback || 'Great!'}"`);
+            }
+        };
+
         const handleOrderPing = (ping) => {
             if (!currentUser || !ping) return;
             if (activeRole === 'vendor') {
@@ -926,7 +997,8 @@ function startDatabaseSync(role) {
                 }
             } else if (activeRole === 'student') {
                 const myUname = (currentUser.username || '').toLowerCase();
-                if (!ping.customer || ping.customer.toLowerCase() === myUname) {
+                const pingCust = (ping.customer || '').toLowerCase();
+                if (!pingCust || pingCust === myUname) {
                     syncLiveOrdersAndInventory('student');
                 }
             }
@@ -940,6 +1012,8 @@ function startDatabaseSync(role) {
         appSocket.on('inventory_updated', handleInventoryUpdated);
         appSocket.on('shop.status_changed', handleShopStatusChanged);
         appSocket.on('shop_status_changed', handleShopStatusChanged);
+        appSocket.on('review.created', handleReviewCreated);
+        appSocket.on('reviews_updated', handleReviewCreated);
         appSocket.on('order_ping', handleOrderPing);
     }
 
@@ -1325,7 +1399,7 @@ function switchVendorTab(view) {
     const viewEl = $(`vendor-${view}-view`);
     if (viewEl) viewEl.classList.add('active');
 
-    if (view === 'orders' || view === 'dashboard') { renderVendorOrders(); updateVendorOrderBadge(0); }
+    if (view === 'orders' || view === 'dashboard') { renderVendorOrders(); updateVendorOrderBadge(); }
     if (view === 'inventory') renderInventory();
     if (view === 'history') renderVendorOrderHistory();
     if (view === 'analytics') renderAnalyticsChart();
@@ -2635,8 +2709,15 @@ function placeOrderAfterPayment(method, paymentId) {
 function finalizeOrderSuccess(orderData, paymentId) {
     isSubmitting = false;
     currentOrder = orderData;
-    liveOrders.unshift(currentOrder);
-    allOrders.unshift(currentOrder);
+    if (orderData.subOrders && Array.isArray(orderData.subOrders)) {
+        orderData.subOrders.forEach(so => {
+            if (!allOrders.some(o => o.id === so.id)) allOrders.unshift(so);
+            if (!liveOrders.some(o => o.id === so.id)) liveOrders.unshift(so);
+        });
+    } else {
+        if (!liveOrders.some(o => o.id === currentOrder.id)) liveOrders.unshift(currentOrder);
+        if (!allOrders.some(o => o.id === currentOrder.id)) allOrders.unshift(currentOrder);
+    }
     try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
     try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
     broadcastRealtimeEvent('NEW_ORDER', orderData);
@@ -3249,6 +3330,9 @@ function renderVendorOrderHistory() {
         } catch (e) { ordersList = []; }
     }
 
+    const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+    ordersList = ordersList.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVId);
+
     // 2. Filter by status and search query
     let filtered = ordersList.filter(o => {
         if (!o) return false;
@@ -3629,7 +3713,7 @@ function updateStock(id, newStock) {
     if (!item) return;
     item.stock = stock;
     try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
-    broadcastRealtimeEvent('INVENTORY_UPDATED', inventory);
+    broadcastRealtimeEvent('INVENTORY_UPDATED', [item]);
     renderInventory();
     renderMenu();
     showNotification('Stock updated ✅');
@@ -3653,7 +3737,7 @@ function updatePrice(id, newPrice) {
     if (!item) return;
     item.price = price;
     try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
-    broadcastRealtimeEvent('INVENTORY_UPDATED', inventory);
+    broadcastRealtimeEvent('INVENTORY_UPDATED', [item]);
     renderInventory();
     renderMenu();
     showNotification('Price updated ✅');
@@ -3797,21 +3881,23 @@ function fetchVendorReviews() {
 function renderVendorReviews() {
     const container = $('vendor-reviews-container');
     if (!container) return;
-    if (allReviews.length === 0) {
+    const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+    const myReviews = allReviews.filter(r => !r.vendor_id && !r.vendorId || Number(r.vendor_id || r.vendorId) === myVId);
+    if (myReviews.length === 0) {
         container.innerHTML = `<div class="empty-state"><i data-lucide="message-square-dashed" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No reviews yet. Feed some students to get feedback!</p></div>`;
         safeCreateIcons();
         return;
     }
-    const avgAll = (allReviews.reduce((s, r) => s + r.rating, 0) / allReviews.length).toFixed(1);
+    const avgAll = (myReviews.reduce((s, r) => s + r.rating, 0) / myReviews.length).toFixed(1);
     container.innerHTML = `
         <div class="glass-panel" style="padding:1.5rem;display:flex;gap:2rem;align-items:center;margin-bottom:1rem;">
             <div style="text-align:center;">
                 <div style="font-size:3rem;font-weight:700;color:var(--secondary);">${avgAll}</div>
                 <div style="color:#f59e0b;font-size:1.2rem;">${'★'.repeat(Math.round(avgAll))}${'☆'.repeat(5-Math.round(avgAll))}</div>
-                <div style="color:var(--text-secondary);font-size:0.85rem;">${allReviews.length} review(s)</div>
+                <div style="color:var(--text-secondary);font-size:0.85rem;">${myReviews.length} review(s)</div>
             </div>
         </div>
-        ${allReviews.map(r => `
+        ${myReviews.map(r => `
             <div class="review-card">
                 <div class="review-stars">${'★'.repeat(Math.max(0, Math.min(5, Number(r.rating) || 0)))}${'☆'.repeat(5 - Math.max(0, Math.min(5, Number(r.rating) || 0)))}</div>
                 <p style="margin:0;font-weight:600;">${escapeHtml(r.customer)}</p>
@@ -3858,8 +3944,12 @@ function renderAnalyticsChart() {
 // ========================= INLINE ORDER HISTORY =========================
 function renderInlineOrderHistory() {
     const container = $('history-inline-container');
-    if (!container) return;
-    const myOrders = allOrders.filter(o => o.customer === (currentUser ? currentUser.username : ''));
+    const myUname = (currentUser && currentUser.username ? currentUser.username : '').toLowerCase();
+    const myOrders = allOrders.filter(o => {
+        if (!currentUser) return false;
+        const c = (o.customer || '').toLowerCase();
+        return c === myUname || (currentUser.id && o.userId === currentUser.id);
+    });
 
     if (myOrders.length === 0) {
         container.innerHTML = `<div class="empty-state"><i data-lucide="receipt" style="width:48px;height:48px;color:var(--text-secondary);margin-bottom:1rem;"></i><p>No orders yet! Go grab something delicious.</p></div>`;

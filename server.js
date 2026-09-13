@@ -982,7 +982,7 @@ app.get('/api/orders', async (req, res) => {
         let queryParams = [];
 
         if (req.user.role === 'student') {
-            ordersQuery = 'SELECT * FROM orders WHERE customer = ? ORDER BY placed_at DESC';
+            ordersQuery = 'SELECT * FROM orders WHERE LOWER(customer) = LOWER(?) ORDER BY placed_at DESC';
             queryParams = [req.user.username];
         } else if (req.user.role === 'vendor') {
             ordersQuery = 'SELECT * FROM orders WHERE vendor_id = ? ORDER BY placed_at DESC';
@@ -1233,8 +1233,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 updatedAt: Date.now()
             };
 
-            io.to(`vendor:${ord.vendor_id || ord.vendorId}`).emit('order.created', eventPayload);
-            io.to(`vendor:${ord.vendor_id || ord.vendorId}`).emit('orders_updated', ord);
+            const targetVendorId = ord.vendor_id || ord.vendorId;
+            io.to(`vendor:${targetVendorId}`).emit('order.created', eventPayload);
+            io.to(`vendor_${targetVendorId}`).emit('order.created', eventPayload);
+            io.to(`vendor:${targetVendorId}`).emit('orders_updated', ord);
+            io.to(`vendor_${targetVendorId}`).emit('orders_updated', ord);
             if (studentUserId) {
                 io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
             }
@@ -1250,7 +1253,8 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             // Global order sync ping
             io.emit('order_ping', {
                 orderId: ord.id,
-                vendorId: ord.vendor_id || ord.vendorId,
+                masterOrderId: ord.masterOrderId || null,
+                vendorId: targetVendorId,
                 customer,
                 status: 'pending',
                 updatedAt: Date.now()
@@ -1260,7 +1264,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
 
-        res.status(201).json(createdOrders[0]);
+        const primaryOrder = createdOrders[0];
+        if (createdOrders.length > 1) {
+            primaryOrder.subOrders = createdOrders;
+        }
+        res.status(201).json(primaryOrder);
     } catch (err) {
         await conn.rollback();
         conn.release();
@@ -1343,13 +1351,16 @@ async function handleOrderStatusUpdate(req, res) {
             updatedAt: Date.now()
         };
 
+        const targetVendorId = currentOrder.vendor_id || vId;
         const eventPayload = {
             eventId: 'evt_' + crypto.randomUUID(),
             event: 'order.status_changed',
             version: newVersion,
             orderId: id,
+            masterOrderId: currentOrder.master_order_id || null,
+            customer: currentOrder.customer,
             userId: currentOrder.user_id,
-            vendorId: currentOrder.vendor_id || vId,
+            vendorId: targetVendorId,
             status,
             cancelReason: cancelReason || null,
             token: currentOrder.token,
@@ -1357,8 +1368,10 @@ async function handleOrderStatusUpdate(req, res) {
         };
 
         // Targeted emission strictly to vendor room, student room, and order room
-        io.to(`vendor:${currentOrder.vendor_id || vId}`).emit('order.status_changed', eventPayload);
-        io.to(`vendor:${currentOrder.vendor_id || vId}`).emit('order_status_changed', updatedOrder);
+        io.to(`vendor:${targetVendorId}`).emit('order.status_changed', eventPayload);
+        io.to(`vendor_${targetVendorId}`).emit('order.status_changed', eventPayload);
+        io.to(`vendor:${targetVendorId}`).emit('order_status_changed', updatedOrder);
+        io.to(`vendor_${targetVendorId}`).emit('order_status_changed', updatedOrder);
         if (currentOrder.user_id) {
             io.to(`user:${currentOrder.user_id}`).emit('order.status_changed', eventPayload);
         }
@@ -1375,7 +1388,8 @@ async function handleOrderStatusUpdate(req, res) {
         // Global real-time order status ping for cross-device synchronization
         io.emit('order_ping', {
             orderId: id,
-            vendorId: currentOrder.vendor_id || vId,
+            masterOrderId: currentOrder.master_order_id || null,
+            vendorId: targetVendorId,
             customer: currentOrder.customer,
             status,
             updatedAt: Date.now()
@@ -1422,7 +1436,7 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
 
         await db.query(
             'INSERT INTO reviews (order_id, vendor_id, customer, items, rating, feedback, time) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [orderId, vendorId, customer, items, rating, feedback || null, time]
+            [orderId, vendorId, finalCustomer, items, rating, feedback || null, time]
         );
         await db.query(
             'UPDATE orders SET rating = ?, feedback = ? WHERE id = ?',
@@ -1432,7 +1446,7 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
         const newReview = {
             orderId,
             vendorId,
-            customer,
+            customer: finalCustomer,
             items,
             rating: Number(rating),
             feedback: feedback || null,
@@ -1448,7 +1462,11 @@ app.post('/api/reviews', authorize(['student']), async (req, res) => {
         };
 
         io.to(`vendor:${vendorId}`).emit('review.created', eventPayload);
+        io.to(`vendor_${vendorId}`).emit('review.created', eventPayload);
         io.to(`vendor:${vendorId}`).emit('reviews_updated', newReview);
+        io.to(`vendor_${vendorId}`).emit('reviews_updated', newReview);
+        io.emit('review.created', eventPayload);
+        io.emit('reviews_updated', newReview);
 
         res.status(201).json({ message: 'Review submitted successfully.' });
     } catch (err) {
@@ -1821,6 +1839,14 @@ io.on('connection', (socket) => {
             inventory: payload,
             updatedAt: Date.now()
         });
+    });
+
+    // Client emitted reviews update
+    socket.on('update_reviews', (payload) => {
+        const vId = Number(payload.vendorId || (socket.user && socket.user.vendorId) || 1);
+        io.to(`vendor:${vId}`).emit('reviews_updated', payload);
+        io.to(`vendor_${vId}`).emit('reviews_updated', payload);
+        io.emit('reviews_updated', payload);
     });
 
     socket.on('disconnect', () => {});

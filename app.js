@@ -2720,9 +2720,11 @@ function placeOrderAfterPayment(method, paymentId) {
             return;
         }
         const data = await safeParseJson(res);
-        if (data && data.token) orderPayload.token = data.token;
-        if (data && data.id) orderPayload.id = data.id;
-        finalizeOrderSuccess(orderPayload, paymentId);
+        const finalOrder = { ...orderPayload, ...(data || {}) };
+        if (data && data.token) finalOrder.token = data.token;
+        if (data && data.id) finalOrder.id = data.id;
+        if (data && data.subOrders) finalOrder.subOrders = data.subOrders;
+        finalizeOrderSuccess(finalOrder, paymentId);
     })
     .catch(err => {
         console.error('Order placement network error:', err);
@@ -2742,10 +2744,9 @@ function finalizeOrderSuccess(orderData, paymentId) {
             if (!allOrders.some(o => o.id === so.id)) allOrders.unshift(so);
             if (!liveOrders.some(o => o.id === so.id)) liveOrders.unshift(so);
         });
-    } else {
-        if (!liveOrders.some(o => o.id === currentOrder.id)) liveOrders.unshift(currentOrder);
-        if (!allOrders.some(o => o.id === currentOrder.id)) allOrders.unshift(currentOrder);
     }
+    if (!liveOrders.some(o => o.id === currentOrder.id)) liveOrders.unshift(currentOrder);
+    if (!allOrders.some(o => o.id === currentOrder.id)) allOrders.unshift(currentOrder);
     try { localStorage.setItem('snacktime_orders', JSON.stringify(allOrders)); } catch (e) {}
     try { localStorage.setItem('snacktime_inventory', JSON.stringify(inventory)); } catch (e) {}
     broadcastRealtimeEvent('NEW_ORDER', orderData);
@@ -2860,7 +2861,16 @@ function showTracking() {
     const trackIdEl = $('track-order-id');
     if (trackIdEl) trackIdEl.innerText = currentOrder.id;
     const tokenEl = $('track-order-token');
-    if (tokenEl) tokenEl.innerText = currentOrder.token ? String(currentOrder.token).padStart(3, '0') : '—';
+    if (tokenEl) {
+        if (currentOrder.subOrders && currentOrder.subOrders.length > 1) {
+            tokenEl.innerText = currentOrder.subOrders.map(so => {
+                const sName = VENDOR_NAMES_MAP[so.vendorId] || `Stall ${so.vendorId}`;
+                return `#${so.token || '—'} (${sName})`;
+            }).join(' | ');
+        } else {
+            tokenEl.innerText = currentOrder.token ? String(currentOrder.token).padStart(3, '0') : '—';
+        }
+    }
     updateTrackingUI(currentOrder.status);
     updateTrackingTimeline(currentOrder.status);
     const ratingSection = $('rating-section');

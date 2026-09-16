@@ -1180,16 +1180,36 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             });
         } else {
             // Multi-Vendor Cart: Partition into linked sub-orders
+            // 1. Insert Master Order record into orders table first (satisfies foreign keys & provides central order record)
+            const masterToken = token || Math.floor(100 + Math.random() * 900);
+            try {
+                await conn.query(
+                    'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [id, studentUserId, vendorIdKeys[0] || 1, null, customer, secureGrandTotal, orderStatus, time, placedAt, method, masterToken, paymentId || null, 1]
+                );
+            } catch (masterErr) {
+                console.warn('Master order insert notice:', masterErr.message);
+            }
+
+            // 2. Partition into linked sub-orders for each vendor stall
             for (let i = 0; i < vendorIdKeys.length; i++) {
                 const vId = vendorIdKeys[i];
                 const subOrderId = `${id}-V${vId}`;
                 const group = vendorGroups[vId];
                 const assignedToken = await getNextVendorToken(vId, token);
 
-                await conn.query(
-                    'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
-                );
+                try {
+                    await conn.query(
+                        'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
+                    );
+                } catch (subErr) {
+                    console.warn('Sub-order FK fallback notice:', subErr.message);
+                    await conn.query(
+                        'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [subOrderId, studentUserId, vId, null, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
+                    );
+                }
 
                 for (const cartItem of group.items) {
                     await conn.query(
@@ -1264,10 +1284,9 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
 
-        const primaryOrder = createdOrders[0];
-        if (createdOrders.length > 1) {
-            primaryOrder.subOrders = createdOrders;
-        }
+        const primaryOrder = createdOrders[0] || { id, customer, total: secureGrandTotal, status: orderStatus, time, placedAt, method };
+        primaryOrder.subOrders = createdOrders;
+        primaryOrder.masterOrderId = id;
         res.status(201).json(primaryOrder);
     } catch (err) {
         try { await conn.rollback(); } catch (re) {}

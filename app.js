@@ -1,5 +1,8 @@
 const $ = id => document.getElementById(id);
-const SERVER_BASE_URL = window.SNACKTIME_SERVER_URL || localStorage.getItem('custom_server_url') || (window.location.port === '3000' ? '' : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:3000' : ''));
+const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const SERVER_BASE_URL = isLocalhost
+    ? (window.location.port === '3000' ? '' : 'http://localhost:3000')
+    : (window.SNACKTIME_SERVER_URL || localStorage.getItem('custom_server_url') || 'https://snacktime-backend.onrender.com');
 
 let csrfToken = '';
 
@@ -68,7 +71,8 @@ document.addEventListener('DOMContentLoaded', () => {
 async function apiFetch(url, options = {}) {
     options.headers = options.headers || {};
     const method = (options.method || 'GET').toUpperCase();
-    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    const isPublicAuth = url.startsWith('/api/login') || url.startsWith('/api/register') || url.startsWith('/api/forgot-password');
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method) && !isPublicAuth) {
         if (!csrfToken) {
             await fetchCsrfToken();
         }
@@ -77,7 +81,7 @@ async function apiFetch(url, options = {}) {
         }
     }
     const token = localStorage.getItem('snacktime_jwt_token');
-    if (token) {
+    if (token && !isPublicAuth) {
         options.headers['Authorization'] = 'Bearer ' + token;
     }
     options.credentials = 'include';
@@ -116,12 +120,12 @@ function initSocketConnection() {
 
         const socketOpts = {
             withCredentials: true,
-            transports: ['websocket', 'polling'],
+            transports: ['polling', 'websocket'],
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 4000,
-            timeout: 10000,
+            timeout: 15000,
             auth: { token, role, username, vendorId },
             query: { token, role, username, vendorId }
         };
@@ -1522,7 +1526,7 @@ function toggleAuthMode() {
     const titleEl = $('auth-title');
     if (titleEl) {
         if (mode === 'register') {
-            titleEl.innerText = role === 'vendor' ? 'Create Vendor Account' : 'Create Student Account';
+            titleEl.innerText = role === 'vendor' ? 'Vendor Portal (Pre-assigned Stalls)' : 'Create Student Account';
         } else {
             titleEl.innerText = role === 'vendor' ? 'Vendor Portal Login' : 'Login to Order';
         }
@@ -1568,9 +1572,25 @@ function switchAuthTab(role) {
         }
     });
 
+    // Control Register mode visibility: Vendor accounts are pre-configured for stalls 1-5
+    const registerLabel = document.querySelector('input[name="auth-mode"][value="register"]')?.parentElement;
+    const loginRadio = document.querySelector('input[name="auth-mode"][value="login"]');
+    if (role === 'vendor') {
+        if (loginRadio) loginRadio.checked = true;
+        if (registerLabel) registerLabel.style.display = 'none';
+    } else {
+        if (registerLabel) registerLabel.style.display = 'inline-flex';
+    }
+
     const usernameInput = $('username');
     if (usernameInput) {
-        usernameInput.placeholder = role === 'vendor' ? 'Vendor Username (e.g. vendor)' : 'Username (e.g. harriz07)';
+        usernameInput.placeholder = role === 'vendor' ? 'Vendor Username (e.g. vendor1 to vendor5)' : 'Username (e.g. harriz07)';
+    }
+
+    const errorEl = $('login-error');
+    if (errorEl) {
+        errorEl.style.display = 'none';
+        errorEl.innerText = '';
     }
 
     toggleAuthMode();
@@ -1658,10 +1678,6 @@ function register() {
         }
 
         if (!res.ok && contentType.includes('application/json')) {
-            // If register endpoint itself returns 401/500 (backend middleware issue), fall to local fallback
-            if (res.status === 401 || res.status === 403 || res.status === 500) {
-                throw new Error('API_FALLBACK');
-            }
             try {
                 const errData = await res.json();
                 if (errData && errData.message) {
@@ -1675,13 +1691,21 @@ function register() {
                     if (errorMsg) {
                         errorMsg.innerText = errData.message;
                         errorMsg.style.display = 'block';
+                    } else {
+                        showNotification(errData.message, 'error');
                     }
                     return;
                 }
             } catch (e) {}
+            if (btn) { btn.innerText = 'Register'; btn.disabled = false; }
+            if (errorMsg) {
+                errorMsg.innerText = `Registration error (${res.status}). Please try again.`;
+                errorMsg.style.display = 'block';
+            }
+            return;
         }
 
-        // If non-JSON or static hosting 404, fallback to offline local store
+        // If non-JSON or offline, fallback to offline local store
         throw new Error('API_FALLBACK');
     })
     .catch(err => {
@@ -1866,7 +1890,11 @@ function executeLogin(username, role, email = '', id = null, token = null, vendo
 function logout() {
     apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('snacktime_session');
+    localStorage.removeItem('snacktime_jwt_token');
     stopDatabaseSync();
+    if (appSocket) {
+        appSocket.auth = {};
+    }
     _lastOrdersSig = '';
     _lastInventorySig = '';
     _lastSettingsSig = '';

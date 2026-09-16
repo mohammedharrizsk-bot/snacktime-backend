@@ -69,16 +69,21 @@
         });
       }
 
-      // When SW takes control, automatically reload page to run newest code
+      // When SW takes control, safely reload only if user is not actively typing/interacting
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!refreshing && !window._razorpayActive) {
+          const isInteracting = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+          if (isInteracting) {
+            console.log('[SNACK TIME] Update ready; deferred reload until user finishes interaction.');
+            return;
+          }
           refreshing = true;
-          console.log('[SNACK TIME] Instant auto-update triggered! Reloading...');
+          console.log('[SNACK TIME] Auto-update applied! Reloading cleanly...');
           window.location.reload();
         }
       });
 
-      // Register SW & set aggressive 15-second polling + visibility-change check
+      // Register SW & check for updates periodically
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw-v2.js', { updateViaCache: 'none' })
           .then((reg) => {
@@ -86,10 +91,10 @@
             console.log('[SNACK TIME] SW registered v' + window.SNACKTIME_VERSION);
             watchRegistration(reg);
 
-            // 1. Poll for deployment updates every 15 seconds
+            // 1. Check for deployment updates every 60 seconds
             setInterval(() => {
               reg.update().catch(() => {});
-            }, 15 * 1000);
+            }, 60 * 1000);
 
             // 2. Check for deployment updates whenever tab/PWA becomes active
             document.addEventListener('visibilitychange', () => {

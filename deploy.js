@@ -31,9 +31,9 @@ console.log(` ✅ Updated app.js → v${newVersion}`);
 const htmlPath = path.join(rootDir, 'index.html');
 let htmlCode = fs.readFileSync(htmlPath, 'utf8');
 htmlCode = htmlCode.replace(/window\.SNACKTIME_VERSION = ['"][^'"]+['"];/, `window.SNACKTIME_VERSION = '${newVersion}';`);
-htmlCode = htmlCode.replace(/app\.js\?v=\d+/, `app.js?v=${buildId}`);
-htmlCode = htmlCode.replace(/styles\.css\?v=\d+/, `styles.css?v=${buildId}`);
-htmlCode = htmlCode.replace(/translations\.js\?v=\d+/, `translations.js?v=${buildId}`);
+htmlCode = htmlCode.replace(/app\.js\?v=[^"']+/, `app.js?v=${buildId}`);
+htmlCode = htmlCode.replace(/styles\.css\?v=[^"']+/, `styles.css?v=${buildId}`);
+htmlCode = htmlCode.replace(/translations\.js\?v=[^"']+/, `translations.js?v=${buildId}`);
 fs.writeFileSync(htmlPath, htmlCode);
 console.log(` ✅ Updated index.html → v${newVersion} & asset query params v=${buildId}`);
 

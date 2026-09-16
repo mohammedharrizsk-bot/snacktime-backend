@@ -223,7 +223,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
         return res.status(400).json({ message: 'Username and password are required.' });
 
     if (role === 'vendor') {
-        return res.status(403).json({ message: 'Vendor accounts cannot be registered publicly. Please contact administration.' });
+        return res.status(400).json({ message: 'Vendor accounts are pre-configured for Stalls 1 to 5. Please log in directly with your stall credentials (e.g. vendor1 to vendor5) or reset your password.' });
     }
 
     const assignedRole = 'student';

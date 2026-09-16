@@ -86,12 +86,17 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Static assets (JS, CSS, images, fonts) — Cache-first
-  //    Because we bump ?v=XX query params on deploy, new URLs miss the cache
-  //    and get fetched fresh; old URLs served from cache remain fast.
+  // 3. Application Scripts & Styles — Network-first with cache fallback
   if (
     url.pathname.endsWith('.js') ||
-    url.pathname.endsWith('.css') ||
+    url.pathname.endsWith('.css')
+  ) {
+    event.respondWith(networkFirstStrategy(event.request));
+    return;
+  }
+
+  // 4. Static media & fonts (images, icons, fonts) — Cache-first
+  if (
     url.pathname.endsWith('.png') ||
     url.pathname.endsWith('.jpg') ||
     url.pathname.endsWith('.svg') ||

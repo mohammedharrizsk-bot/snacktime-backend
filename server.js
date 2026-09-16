@@ -459,19 +459,58 @@ app.post('/api/forgot-password', authLimiter, async (req, res) => {
         const resetLink = `${frontendUrl}/?action=reset-password&token=${resetToken}&username=${encodeURIComponent(user.username)}`;
 
         if (mailTransporter && user.email && !user.email.endsWith('@vendor.snacktime.com')) {
+            const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f5;padding:30px 0;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+        <!-- Header -->
+        <tr><td style="background:linear-gradient(135deg,#ff6b35,#f7931e);padding:30px;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:28px;letter-spacing:1px;">🍔 SNACK TIME</h1>
+          <p style="color:rgba(255,255,255,0.9);margin:6px 0 0;font-size:14px;">SECE Campus Cafe</p>
+        </td></tr>
+        <!-- Body -->
+        <tr><td style="padding:36px 40px;">
+          <h2 style="color:#333;margin:0 0 16px;font-size:22px;">Password Reset Request</h2>
+          <p style="color:#555;line-height:1.6;margin:0 0 12px;">Hello <strong>${user.username}</strong>,</p>
+          <p style="color:#555;line-height:1.6;margin:0 0 28px;">
+            We received a request to reset your SNACK TIME account password. Click the button below to set a new password.
+          </p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="${resetLink}" style="background:linear-gradient(135deg,#ff6b35,#f7931e);color:#fff;padding:14px 36px;text-decoration:none;border-radius:25px;font-weight:bold;font-size:16px;display:inline-block;letter-spacing:0.5px;">
+              🔑 Reset My Password
+            </a>
+          </div>
+          <p style="color:#555;line-height:1.6;margin:24px 0 8px;">Or copy this link into your browser:</p>
+          <p style="background:#f8f8f8;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;font-size:12px;word-break:break-all;color:#666;margin:0;">${resetLink}</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:28px 0;">
+          <p style="color:#999;font-size:13px;line-height:1.5;margin:0;">
+            If you did not request a password reset, please ignore this email. Your password will remain unchanged.
+          </p>
+        </td></tr>
+        <!-- Footer -->
+        <tr><td style="background:#fafafa;padding:20px 40px;text-align:center;border-top:1px solid #eee;">
+          <p style="color:#bbb;font-size:12px;margin:0;">
+            &copy; ${new Date().getFullYear()} SNACK TIME — SECE Campus Cafe<br>
+            This is an automated email. Please do not reply to this message.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
             mailTransporter.sendMail({
-                from: '"SNACK TIME Campus Cafe" <noreply@snacktime.sece.ac.in>',
+                from: SMTP_FROM,
                 to: user.email,
-                subject: 'SNACK TIME - Password Recovery Link',
-                html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:500px;margin:0 auto;border:1px solid #eee;border-radius:12px;">
-                        <h2 style="color:#ff6b35;">SNACK TIME Password Recovery</h2>
-                        <p>Hello <strong>${user.username}</strong>,</p>
-                        <p>You requested a password reset for your SNACK TIME account.</p>
-                        <p style="margin:20px 0;">
-                            <a href="${resetLink}" style="background:#ff6b35;color:#fff;padding:12px 24px;text-decoration:none;border-radius:20px;font-weight:bold;display:inline-block;">Reset Password Now</a>
-                        </p>
-                        <p style="font-size:0.85rem;color:#888;">If you did not request this, you can safely ignore this email.</p>
-                       </div>`
+                subject: 'SNACK TIME — Password Reset Link',
+                html: emailHtml
+            }).then(() => {
+                console.log('Password reset email sent to:', user.email);
             }).catch(mailErr => {
                 console.warn('SMTP mail send warning:', mailErr.message);
             });
@@ -1915,33 +1954,31 @@ function broadcastShopStatus(settings) {
 
 // ── NODEMAILER ───────────────────────────────────────────────────────────────
 const SMTP_CONFIG = {
-    host:   process.env.SMTP_HOST || 'smtp.gmail.com',
+    host:   process.env.SMTP_HOST   || 'smtp.gmail.com',
     port:   Number(process.env.SMTP_PORT) || 465,
-    secure: process.env.SMTP_SECURE !== 'false',
+    secure: process.env.SMTP_SECURE !== 'false', // true = SSL (port 465)
     auth: {
-        user: process.env.SMTP_USER || 'YOUR_EMAIL@gmail.com',
-        pass: process.env.SMTP_PASS || 'YOUR_APP_PASSWORD'
+        user: process.env.SMTP_USER || '',
+        pass: process.env.SMTP_PASS || ''
     }
 };
 
-let mailTransporter;
+const SMTP_FROM = `"${process.env.SMTP_FROM_NAME || 'SNACK TIME Campus Cafe'}" <${SMTP_CONFIG.auth.user || 'snacktimesece@gmail.com'}>`;
+
+let mailTransporter = null;
+
 async function initNodemailer() {
-    if (SMTP_CONFIG.auth.user !== 'YOUR_EMAIL@gmail.com') {
+    if (!SMTP_CONFIG.auth.user || !SMTP_CONFIG.auth.pass) {
+        console.warn('SMTP credentials not configured. Email sending is DISABLED.');
+        return;
+    }
+    try {
         mailTransporter = nodemailer.createTransport(SMTP_CONFIG);
-        console.log('Custom SMTP Mailer configured.');
-    } else {
-        try {
-            const testAccount = await nodemailer.createTestAccount();
-            mailTransporter = nodemailer.createTransport({
-                host: 'smtp.ethereal.email',
-                port: 587,
-                secure: false,
-                auth: { user: testAccount.user, pass: testAccount.pass }
-            });
-            console.log('Nodemailer running in TEST mode (Ethereal Email).');
-        } catch (e) {
-            console.error('Failed to initialise SMTP mailer:', e);
-        }
+        await mailTransporter.verify();
+        console.log('SMTP Mailer ready — sending from: ' + SMTP_CONFIG.auth.user);
+    } catch (e) {
+        console.error('SMTP mailer failed to initialise:', e.message);
+        mailTransporter = null;
     }
 }
 

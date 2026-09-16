@@ -1165,12 +1165,14 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
 
         const secureGrandTotal = calculatedGrandTotal > 0 ? calculatedGrandTotal : Number(total);
 
-        // Helper: Generate daily sequential token per stall (resets every morning, avoiding counter collisions)
-        async function getNextVendorToken(targetVendorId, fallbackToken) {
+        // Helper: Token via standalone db.query() — OUTSIDE the transaction
+        // (Using conn.query() inside the transaction blocks unnecessarily and
+        //  if it ever throws, it poisons the entire PG transaction)
+        async function getNextVendorTokenSafe(targetVendorId, fallbackToken) {
             try {
                 const startOfDay = new Date();
                 startOfDay.setHours(0, 0, 0, 0);
-                const [maxRows] = await conn.query(
+                const [maxRows] = await db.query(
                     'SELECT MAX(token) as max_token FROM orders WHERE vendor_id = ? AND placed_at >= ?',
                     [targetVendorId, startOfDay.getTime()]
                 );
@@ -1185,10 +1187,17 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         const orderStatus = status || 'pending';
         const createdOrders = [];
 
+        // Pre-compute tokens for ALL vendors BEFORE the transaction INSERT phase
+        // (avoids running extra queries through the transactional conn mid-INSERT)
+        const vendorTokens = {};
+        for (const vId of vendorIdKeys) {
+            vendorTokens[vId] = await getNextVendorTokenSafe(vId, token);
+        }
+
         // If all items belong to 1 vendor
         if (vendorIdKeys.length === 1) {
             const vId = vendorIdKeys[0];
-            const assignedToken = await getNextVendorToken(vId, token);
+            const assignedToken = vendorTokens[vId];
 
             await conn.query(
                 'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -1218,61 +1227,75 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 version: 1
             });
         } else {
-            // Multi-Vendor Cart: Partition into linked sub-orders
-            // 1. Insert Master Order record into orders table first (satisfies foreign keys & provides central order record)
-            const masterToken = token || Math.floor(100 + Math.random() * 900);
-            try {
-                await conn.query(
-                    'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [id, studentUserId, vendorIdKeys[0] || 1, null, customer, secureGrandTotal, orderStatus, time, placedAt, method, masterToken, paymentId || null, 1]
-                );
-            } catch (masterErr) {
-                console.warn('Master order insert notice:', masterErr.message);
-            }
-
-            // 2. Partition into linked sub-orders for each vendor stall
+            // Multi-Vendor Cart: partition into linked sub-orders using SAVEPOINTs
+            // IMPORTANT: In PostgreSQL, a failed query aborts the ENTIRE transaction.
+            // SAVEPOINT lets us roll back just one sub-order attempt without poisoning the transaction.
             for (let i = 0; i < vendorIdKeys.length; i++) {
                 const vId = vendorIdKeys[i];
                 const subOrderId = `${id}-V${vId}`;
                 const group = vendorGroups[vId];
-                const assignedToken = await getNextVendorToken(vId, token);
+                const assignedToken = vendorTokens[vId];
+                const savepointName = `sp_vendor_${vId}`;
 
+                // Set a savepoint before each vendor's INSERTs
+                await conn.query(`SAVEPOINT ${savepointName}`, []);
+
+                let subOrderInserted = false;
                 try {
+                    // Try with master_order_id reference
                     await conn.query(
                         'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                         [subOrderId, studentUserId, vId, id, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
                     );
-                } catch (subErr) {
-                    console.warn('Sub-order FK fallback notice:', subErr.message);
-                    await conn.query(
-                        'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        [subOrderId, studentUserId, vId, null, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
-                    );
+                    subOrderInserted = true;
+                } catch (e1) {
+                    // Roll back to savepoint (clears the aborted state) and retry without master_order_id
+                    await conn.query(`ROLLBACK TO SAVEPOINT ${savepointName}`, []);
+                    try {
+                        await conn.query(
+                            'INSERT INTO orders (id, user_id, vendor_id, master_order_id, customer, total, status, time, placed_at, method, token, payment_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                            [subOrderId, studentUserId, vId, null, customer, group.total, orderStatus, time, placedAt, method, assignedToken, paymentId || null, 1]
+                        );
+                        subOrderInserted = true;
+                    } catch (e2) {
+                        // If retry also fails, rollback savepoint and skip this vendor
+                        await conn.query(`ROLLBACK TO SAVEPOINT ${savepointName}`, []);
+                        console.error(`Sub-order insert failed for vendor ${vId}:`, e2.message);
+                    }
                 }
 
-                for (const cartItem of group.items) {
-                    await conn.query(
-                        'INSERT INTO order_items (order_id, item_id, name, qty, price, vendor_id) VALUES (?, ?, ?, ?, ?, ?)',
-                        [subOrderId, cartItem.id, cartItem.name, cartItem.qty, cartItem.price, vId]
-                    );
-                }
+                if (subOrderInserted) {
+                    // Release savepoint (makes it permanent within the transaction)
+                    await conn.query(`RELEASE SAVEPOINT ${savepointName}`, []);
 
-                createdOrders.push({
-                    id: subOrderId,
-                    masterOrderId: id,
-                    userId: studentUserId,
-                    vendorId: vId,
-                    customer,
-                    total: group.total,
-                    status: orderStatus,
-                    time,
-                    placedAt,
-                    method,
-                    items: group.items,
-                    token: assignedToken,
-                    paymentId,
-                    version: 1
-                });
+                    for (const cartItem of group.items) {
+                        await conn.query(
+                            'INSERT INTO order_items (order_id, item_id, name, qty, price, vendor_id) VALUES (?, ?, ?, ?, ?, ?)',
+                            [subOrderId, cartItem.id, cartItem.name, cartItem.qty, cartItem.price, vId]
+                        );
+                    }
+
+                    createdOrders.push({
+                        id: subOrderId,
+                        masterOrderId: id,
+                        userId: studentUserId,
+                        vendorId: vId,
+                        customer,
+                        total: group.total,
+                        status: orderStatus,
+                        time,
+                        placedAt,
+                        method,
+                        items: group.items,
+                        token: assignedToken,
+                        paymentId,
+                        version: 1
+                    });
+                }
+            }
+
+            if (createdOrders.length === 0) {
+                throw new Error('All sub-order inserts failed — no orders were created.');
             }
         }
 
@@ -1308,8 +1331,6 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
                 io.to(`student_${lowerCust}`).emit('order.created', eventPayload);
             }
             io.to(`order:${ord.id}`).emit('order.created', eventPayload);
-
-            // Global order sync ping
             io.emit('order_ping', {
                 orderId: ord.id,
                 masterOrderId: ord.masterOrderId || null,
@@ -1320,12 +1341,11 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             });
         }
 
-        // Emit updated inventory to menu listeners
         broadcastInventoryUpdate();
 
         const primaryOrder = createdOrders[0] || { id, customer, total: secureGrandTotal, status: orderStatus, time, placedAt, method };
         primaryOrder.subOrders = createdOrders;
-        primaryOrder.masterOrderId = id;
+        primaryOrder.masterOrderId = createdOrders.length > 1 ? id : null;
         res.status(201).json(primaryOrder);
     } catch (err) {
         try { await conn.rollback(); } catch (re) {}

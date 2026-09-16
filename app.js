@@ -486,7 +486,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1789544276556';
+const APP_VERSION = '1.0.8.1789553871659';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -903,24 +903,46 @@ function startDatabaseSync(role) {
                                   matchesCurrentOrder;
 
                 if (isMyOrder) {
+                    let stallName = '';
                     if (matchesCurrentOrder) {
-                        currentOrder.status = newStatus;
                         currentOrder.version = eventVersion;
                         if (eventPayload.token) currentOrder.token = eventPayload.token;
+
+                        if (currentOrder.subOrders && Array.isArray(currentOrder.subOrders)) {
+                            const sub = currentOrder.subOrders.find(s => s.id === orderId);
+                            if (sub) {
+                                sub.status = newStatus;
+                                if (eventPayload.token) sub.token = eventPayload.token;
+                                stallName = VENDOR_NAMES_MAP[sub.vendorId] ? `[${VENDOR_NAMES_MAP[sub.vendorId]}] ` : '';
+                            }
+                            // Calculate aggregate order status:
+                            // all completed -> completed
+                            // all ready or completed -> ready
+                            // any preparing -> preparing
+                            const allDone = currentOrder.subOrders.every(s => (s.status || '').toLowerCase() === 'completed');
+                            const allReady = currentOrder.subOrders.every(s => ['ready', 'completed'].includes((s.status || '').toLowerCase()));
+                            const anyPrep = currentOrder.subOrders.some(s => (s.status || '').toLowerCase() === 'preparing');
+                            if (allDone) currentOrder.status = 'completed';
+                            else if (allReady) currentOrder.status = 'ready';
+                            else if (anyPrep) currentOrder.status = 'preparing';
+                            else currentOrder.status = newStatus;
+                        } else {
+                            currentOrder.status = newStatus;
+                        }
                     }
-                    updateTrackingUI(newStatus);
-                    updateTrackingTimeline(newStatus);
+                    updateTrackingUI(currentOrder ? currentOrder.status : newStatus);
+                    updateTrackingTimeline(currentOrder ? currentOrder.status : newStatus);
 
                     const statusLower = (newStatus || '').toLowerCase();
                     if (statusLower === 'preparing') {
-                        triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${orderId}`);
+                        triggerLiveNotification('👨‍🍳 Order Preparing!', `${stallName}Kitchen is preparing Order #${orderId}`);
                     } else if (statusLower === 'ready') {
-                        triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
+                        triggerLiveNotification('🔔 Order READY for Pickup!', `${stallName}Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
                         playOrderAlertSound();
                     } else if (statusLower === 'completed') {
-                        triggerLiveNotification('✅ Order Completed', `Order #${orderId} collected. Thank you!`);
+                        triggerLiveNotification('✅ Order Completed', `${stallName}Order #${orderId} collected. Thank you!`);
                     } else if (statusLower === 'cancelled') {
-                        triggerLiveNotification('❌ Order Cancelled', `Order #${orderId} was cancelled.`);
+                        triggerLiveNotification('❌ Order Cancelled', `${stallName}Order #${orderId} was cancelled.`);
                     }
                 }
                 renderInlineOrderHistory();

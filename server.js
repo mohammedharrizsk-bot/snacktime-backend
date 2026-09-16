@@ -1343,10 +1343,48 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
 
         broadcastInventoryUpdate();
 
-        const primaryOrder = createdOrders[0] || { id, customer, total: secureGrandTotal, status: orderStatus, time, placedAt, method };
-        primaryOrder.subOrders = createdOrders;
-        primaryOrder.masterOrderId = createdOrders.length > 1 ? id : null;
-        res.status(201).json(primaryOrder);
+        let responseOrder;
+        if (createdOrders.length === 1) {
+            responseOrder = createdOrders[0];
+        } else {
+            // Clean non-circular sub-orders array
+            const cleanSubOrders = createdOrders.map(ord => ({
+                id: ord.id,
+                masterOrderId: id,
+                userId: ord.userId,
+                vendorId: ord.vendorId,
+                customer: ord.customer,
+                total: ord.total,
+                status: ord.status,
+                time: ord.time,
+                placedAt: ord.placedAt,
+                method: ord.method,
+                items: ord.items,
+                token: ord.token,
+                paymentId: ord.paymentId,
+                version: ord.version
+            }));
+
+            responseOrder = {
+                id,
+                masterOrderId: null,
+                userId: studentUserId,
+                vendorId: 0,
+                customer,
+                total: secureGrandTotal,
+                status: orderStatus,
+                time,
+                placedAt,
+                method,
+                items,
+                token,
+                paymentId: paymentId || null,
+                version: 1,
+                subOrders: cleanSubOrders
+            };
+        }
+
+        res.status(201).json(responseOrder);
     } catch (err) {
         try { await conn.rollback(); } catch (re) {}
         try { conn.release(); } catch (ce) {}

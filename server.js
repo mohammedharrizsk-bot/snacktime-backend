@@ -1270,10 +1270,10 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
         }
         res.status(201).json(primaryOrder);
     } catch (err) {
-        await conn.rollback();
+        try { await conn.rollback(); } catch (re) {}
         conn.release();
-        console.error('Database checkout error:', err);
-        res.status(500).json({ message: 'Database checkout error.' });
+        console.error('Database checkout error:', err.message, err.code, err.detail, err.hint, err.where);
+        res.status(500).json({ message: 'Database checkout error.', detail: err.message, code: err.code });
     }
 });
 

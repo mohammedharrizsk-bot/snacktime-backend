@@ -10,7 +10,7 @@
 //    The new CACHE_NAME triggers the install/activate lifecycle automatically.
 // =====================================================================
 
-const APP_VERSION = '1.0.8.1789541055970';
+const APP_VERSION = '1.0.8.1789544276556';
 const CACHE_NAME  = `snacktime-static-${APP_VERSION}`;
 
 // Core app shell — only plain paths, no query strings

@@ -343,21 +343,33 @@ function broadcastRealtimeEvent(type, payload) {
     }
 }
 
-// Track recently processed event keys to prevent double notification chimes within 500ms
-const processedRealtimeKeys = new Set();
+// ========================= PERSISTENT NOTIFICATION & EVENT DEDUPLICATION =========================
+const NOTIFIED_CACHE_KEY = 'snacktime_notified_events_v2';
+const processedRealtimeKeys = new Set((() => {
+    try { return JSON.parse(sessionStorage.getItem(NOTIFIED_CACHE_KEY) || '[]'); } catch { return []; }
+})());
+
+function hasEventBeenNotified(key) {
+    return processedRealtimeKeys.has(key);
+}
+
+function recordEventNotified(key) {
+    if (!key) return;
+    processedRealtimeKeys.add(key);
+    try {
+        const arr = Array.from(processedRealtimeKeys).slice(-400); // keep recent 400 entries
+        sessionStorage.setItem(NOTIFIED_CACHE_KEY, JSON.stringify(arr));
+    } catch {}
+}
 
 function handleRealtimeEvent(type, payload) {
     if (!type || !payload) return;
 
-    // Deduplicate identical events arriving within 1 second
     const eventId = payload.id || payload.orderId || JSON.stringify(payload).slice(0, 30);
     const eventKey = `${type}_${eventId}`;
-    const now = Date.now();
-
-    const isDuplicate = processedRealtimeKeys.has(eventKey);
+    const isDuplicate = hasEventBeenNotified(eventKey);
     if (!isDuplicate) {
-        processedRealtimeKeys.add(eventKey);
-        setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
+        recordEventNotified(eventKey);
     }
 
     // Determine current role from session if currentUser variable isn't set yet
@@ -381,9 +393,10 @@ function handleRealtimeEvent(type, payload) {
 
         if (activeRole === 'vendor') {
             renderVendorOrders();
-            updateVendorOrderBadge(liveOrders.length);
-            if (!isDuplicate) {
-                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${payload.id} - ${payload.customer || 'Student'} (₹${payload.total || 0})`);
+            updateVendorOrderBadge();
+            const orderAgeMs = Date.now() - (Number(payload.placedAt) || Date.now());
+            if (!isDuplicate && orderAgeMs < 5 * 60 * 1000) {
+                triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${payload.id} - ${payload.customer || 'Student'} (₹${payload.total || 0})`, 'new-' + payload.id);
                 playOrderAlertSound();
             }
         }
@@ -486,7 +499,7 @@ const RAZORPAY_KEY_ID = 'rzp_test_REPLACE_WITH_YOUR_KEY';
 
 // ========================= APP VERSION =========================
 // Keep in sync with APP_VERSION in sw-v2.js and window.SNACKTIME_VERSION in index.html
-const APP_VERSION = '1.0.8.1789554877114';
+const APP_VERSION = '1.0.8.1791282406294';
 
 // Stamp version into About sections once DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -632,6 +645,7 @@ let _lastReviewsSig = '';
 let _isSyncing = false;
 let _syncQueued = false;
 let _lifecycleListenersAttached = false;
+let _hasInitialOrderHydrated = false;
 
 // ── CORE SYNC ENGINE (Reconciles REST API + Cache across all devices) ────────
 async function syncLiveOrdersAndInventory(role) {
@@ -671,15 +685,30 @@ async function syncLiveOrdersAndInventory(role) {
                     allOrders = rawOrders;
                     liveOrders = allOrders.filter(o => !['completed', 'cancelled', 'expired'].includes(o.status));
 
+                    // On initial hydration, mark all existing orders as known so page load never sounds chimes for old orders
+                    if (!_hasInitialOrderHydrated) {
+                        _hasInitialOrderHydrated = true;
+                        liveOrders.forEach(o => recordEventNotified('order_new_' + o.id));
+                    }
+
                     if (activeRole === 'vendor') {
                         renderVendorOrders();
                         renderVendorOrderHistory();
                         updateVendorOrderBadge();
 
-                        // Detect incoming unhandled new orders for audio/visual alerts
-                        const newPending = liveOrders.find(o => !prevLiveIds.has(o.id) && (o.status || 'pending').toLowerCase() === 'pending');
+                        // Detect incoming unhandled new orders for audio/visual alerts (strictly recent <5 min and not yet notified)
+                        const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
+                        const isRecent = (o) => (Date.now() - (Number(o.placedAt) || Date.now())) < 5 * 60 * 1000;
+                        const newPending = liveOrders.find(o => 
+                            Number(o.vendorId || o.vendor_id || 1) === myVId &&
+                            !prevLiveIds.has(o.id) && 
+                            !hasEventBeenNotified('order_new_' + o.id) &&
+                            (o.status || 'pending').toLowerCase() === 'pending' &&
+                            isRecent(o)
+                        );
                         if (newPending) {
-                            triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${newPending.id} - ${newPending.customer || 'Student'} (₹${newPending.total || 0})`);
+                            recordEventNotified('order_new_' + newPending.id);
+                            triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${newPending.id} - ${newPending.customer || 'Student'} (₹${newPending.total || 0})`, 'order-' + newPending.id);
                             playKitchenBuzzer();
                             announceOrderStatus(newPending, 'pending');
                         }
@@ -702,16 +731,20 @@ async function syncLiveOrdersAndInventory(role) {
                                 updateTrackingUI(updated.status);
                                 updateTrackingTimeline(updated.status);
 
-                                const s = (updated.status || '').toLowerCase();
-                                if (s === 'preparing') {
-                                    triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${updated.id}`);
-                                } else if (s === 'ready') {
-                                    triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`);
-                                    playOrderAlertSound();
-                                } else if (s === 'completed') {
-                                    triggerLiveNotification('✅ Order Completed', `Order #${updated.id} collected. Thank you!`);
-                                } else if (s === 'cancelled') {
-                                    triggerLiveNotification('❌ Order Cancelled', `Order #${updated.id} was cancelled.`);
+                                const statusDedupKey = `order_status_${updated.id}_${updated.status}`;
+                                if (!hasEventBeenNotified(statusDedupKey)) {
+                                    recordEventNotified(statusDedupKey);
+                                    const s = (updated.status || '').toLowerCase();
+                                    if (s === 'preparing') {
+                                        triggerLiveNotification('👨‍🍳 Order Preparing!', `The kitchen is preparing Order #${updated.id}`, 'status-' + updated.id);
+                                    } else if (s === 'ready') {
+                                        triggerLiveNotification('🔔 Order READY for Pickup!', `Order #${updated.id} is ready! Token: ${updated.token || ''}`, 'status-' + updated.id);
+                                        playOrderAlertSound();
+                                    } else if (s === 'completed') {
+                                        triggerLiveNotification('✅ Order Completed', `Order #${updated.id} collected. Thank you!`, 'status-' + updated.id);
+                                    } else if (s === 'cancelled') {
+                                        triggerLiveNotification('❌ Order Cancelled', `Order #${updated.id} was cancelled.`, 'status-' + updated.id);
+                                    }
                                 }
                             }
                         }
@@ -831,10 +864,9 @@ function startDatabaseSync(role) {
                 if (ordVId !== myVId) return;
             }
 
-            const eventKey = 'order.created_' + order.id;
-            if (processedRealtimeKeys.has(eventKey)) return;
-            processedRealtimeKeys.add(eventKey);
-            setTimeout(() => processedRealtimeKeys.delete(eventKey), 1500);
+            const dedupKey = 'order_new_' + order.id;
+            if (hasEventBeenNotified(dedupKey)) return;
+            recordEventNotified(dedupKey);
 
             const idx = allOrders.findIndex(o => o.id === order.id);
             if (idx !== -1) allOrders[idx] = order;
@@ -849,7 +881,7 @@ function startDatabaseSync(role) {
                     renderVendorOrders();
                     renderVendorOrderHistory();
                     updateVendorOrderBadge();
-                    triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`);
+                    triggerLiveNotification('🔔 NEW ORDER RECEIVED!', `Order #${order.id} - ${order.customer || 'Student'} (₹${order.total || 0})`, 'order-' + order.id);
                     playKitchenBuzzer();
                     announceOrderStatus(order, 'pending');
                 }
@@ -868,6 +900,11 @@ function startDatabaseSync(role) {
 
             const newStatus = eventPayload.status;
             const eventVersion = eventPayload.version || 1;
+            const statusDedupKey = `status_alert_${orderId}_${newStatus}`;
+            const shouldAlert = !hasEventBeenNotified(statusDedupKey);
+            if (shouldAlert) {
+                recordEventNotified(statusDedupKey);
+            }
 
             const targetOrder = allOrders.find(o => o.id === orderId);
             if (targetOrder) {
@@ -933,16 +970,18 @@ function startDatabaseSync(role) {
                     updateTrackingUI(currentOrder ? currentOrder.status : newStatus);
                     updateTrackingTimeline(currentOrder ? currentOrder.status : newStatus);
 
-                    const statusLower = (newStatus || '').toLowerCase();
-                    if (statusLower === 'preparing') {
-                        triggerLiveNotification('👨‍🍳 Order Preparing!', `${stallName}Kitchen is preparing Order #${orderId}`);
-                    } else if (statusLower === 'ready') {
-                        triggerLiveNotification('🔔 Order READY for Pickup!', `${stallName}Order #${orderId} is ready! Token: ${eventPayload.token || ''}`);
-                        playOrderAlertSound();
-                    } else if (statusLower === 'completed') {
-                        triggerLiveNotification('✅ Order Completed', `${stallName}Order #${orderId} collected. Thank you!`);
-                    } else if (statusLower === 'cancelled') {
-                        triggerLiveNotification('❌ Order Cancelled', `${stallName}Order #${orderId} was cancelled.`);
+                    if (shouldAlert) {
+                        const statusLower = (newStatus || '').toLowerCase();
+                        if (statusLower === 'preparing') {
+                            triggerLiveNotification('👨‍🍳 Order Preparing!', `${stallName}Kitchen is preparing Order #${orderId}`, 'status-' + orderId);
+                        } else if (statusLower === 'ready') {
+                            triggerLiveNotification('🔔 Order READY for Pickup!', `${stallName}Order #${orderId} is ready! Token: ${eventPayload.token || ''}`, 'status-' + orderId);
+                            playOrderAlertSound();
+                        } else if (statusLower === 'completed') {
+                            triggerLiveNotification('✅ Order Completed', `${stallName}Order #${orderId} collected. Thank you!`, 'status-' + orderId);
+                        } else if (statusLower === 'cancelled') {
+                            triggerLiveNotification('❌ Order Cancelled', `${stallName}Order #${orderId} was cancelled.`, 'status-' + orderId);
+                        }
                     }
                 }
                 renderInlineOrderHistory();
@@ -953,10 +992,12 @@ function startDatabaseSync(role) {
                     renderVendorOrders();
                     renderVendorOrderHistory();
                     updateVendorOrderBadge();
-                    const statusLower = (newStatus || '').toLowerCase();
-                    if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
-                        const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
-                        announceOrderStatus(readyOrder, statusLower);
+                    if (shouldAlert) {
+                        const statusLower = (newStatus || '').toLowerCase();
+                        if (statusLower === 'pending' || statusLower === 'preparing' || statusLower === 'ready') {
+                            const readyOrder = targetOrder || allOrders.find(o => o.id === orderId) || { id: orderId, token: eventPayload.token };
+                            announceOrderStatus(readyOrder, statusLower);
+                        }
                     }
                 }
             }
@@ -1092,7 +1133,12 @@ function updateVendorOrderBadge(count) {
     const badge = $('vendor-order-badge');
     if (!badge) return;
     const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
-    const actualCount = typeof count === 'number' ? count : liveOrders.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVId).length;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfTodayMs = startOfToday.getTime();
+    const actualCount = typeof count === 'number' 
+        ? count 
+        : liveOrders.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVId && Number(o.placedAt || 0) >= startOfTodayMs).length;
     badge.innerText = actualCount;
     badge.style.display = actualCount > 0 ? 'inline-block' : 'none';
 }
@@ -1136,7 +1182,7 @@ function initNativeNotifications() {
     }
 }
 
-function showNotification(message, type = 'success') {
+function showNotification(message, type = 'success', allowNative = true) {
     const container = $('toast-container');
     if (!container) return;
     const toast = document.createElement('div');
@@ -1147,9 +1193,11 @@ function showNotification(message, type = 'success') {
         toast.classList.add('hiding');
         setTimeout(() => toast.remove(), 400);
     }, 3500);
-    if (nativeNotificationsEnabled && document.hidden) {
+    if (allowNative && nativeNotificationsEnabled && document.hidden) {
         const plainText = message.replace(/<[^>]*>?/gm, '');
-        new Notification("SNACK TIME", { body: plainText, icon: "logo.png" });
+        try {
+            new Notification("SNACK TIME", { body: plainText, icon: "snacktime-logo.png", tag: 'snacktime-toast', renotify: false });
+        } catch (e) {}
     }
 }
 let vendorAudioUnlocked = false;
@@ -1240,23 +1288,22 @@ function playOrderAlertSound() {
     } catch (e) {}
 }
 
-function triggerLiveNotification(title, body) {
-    showNotification(`<strong>${title}</strong><br>${body}`, 'success');
+function triggerLiveNotification(title, body, tagKey = null) {
+    showNotification(`<strong>${title}</strong><br>${body}`, 'success', false);
     playOrderAlertSound();
 
-    if ('Notification' in window) {
-        if (Notification.permission === 'granted') {
-            try {
-                const n = new Notification(title, {
-                    body: body,
-                    icon: 'snacktime-logo.png',
-                    badge: 'snacktime-logo.png',
-                    tag: 'snacktime-order-' + Date.now(),
-                    renotify: true
-                });
-                n.onclick = () => window.focus();
-            } catch (e) {}
-        }
+    if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+            const cleanTag = tagKey ? `snacktime-${tagKey}` : `snacktime-alert`;
+            const n = new Notification(title, {
+                body: body,
+                icon: 'snacktime-logo.png',
+                badge: 'snacktime-logo.png',
+                tag: cleanTag,
+                renotify: false
+            });
+            n.onclick = () => window.focus();
+        } catch (e) {}
     }
 }
 
@@ -1438,10 +1485,11 @@ function switchVendorTab(view) {
 
 function renderVendorKPIs() {
     const todayStr = new Date().toDateString();
+    const myVId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
 
-    // 1. Filter Today's Orders accurately (handles placedAt, created_at, timestamp, date)
+    // 1. Filter Today's Orders accurately for THIS vendor stall
     const todayOrders = allOrders.filter(o => {
-        if (!o) return false;
+        if (!o || Number(o.vendorId || o.vendor_id || 1) !== myVId) return false;
         let d = null;
         if (o.placedAt) d = new Date(o.placedAt);
         else if (o.created_at) d = new Date(o.created_at);
@@ -1450,7 +1498,7 @@ function renderVendorKPIs() {
         if (d && !isNaN(d.getTime())) {
             return d.toDateString() === todayStr;
         }
-        return true; // Fallback: active session orders counted for today
+        return false;
     });
 
     // 2. Today's Revenue (sum of all valid, non-cancelled/non-expired orders)
@@ -1458,8 +1506,8 @@ function renderVendorKPIs() {
         .filter(o => o.status !== 'cancelled' && o.status !== 'expired')
         .reduce((sum, o) => sum + (Number(o.total) || 0), 0);
 
-    // 3. Pending & Preparing Orders Count
-    const pendingOrdersList = allOrders.filter(o => o.status === 'pending' || o.status === 'preparing');
+    // 3. Pending & Preparing Orders Count for this stall today
+    const pendingOrdersList = todayOrders.filter(o => o.status === 'pending' || o.status === 'preparing');
     const pendingCount = pendingOrdersList.length;
 
     // 4. Pending Preparation Time (dynamically calculated from items in kitchen queue)
@@ -3191,8 +3239,15 @@ function renderVendorOrders() {
     document.querySelectorAll('[data-i18n="vendor_filter_preparing"]').forEach(el => { if (d.vendor_filter_preparing) el.innerText = d.vendor_filter_preparing; });
     document.querySelectorAll('[data-i18n="vendor_filter_all"]').forEach(el => { if (d.vendor_filter_all) el.innerText = d.vendor_filter_all; });
 
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfTodayMs = startOfToday.getTime();
+
     const myVendorId = Number(currentUser ? (currentUser.vendorId || 1) : 1);
-    const stallOrders = liveOrders.filter(o => Number(o.vendorId || o.vendor_id || 1) === myVendorId);
+    const stallOrders = liveOrders.filter(o => 
+        Number(o.vendorId || o.vendor_id || 1) === myVendorId &&
+        Number(o.placedAt || 0) >= startOfTodayMs
+    );
 
     let filtered = orderFilter === 'all'
         ? stallOrders

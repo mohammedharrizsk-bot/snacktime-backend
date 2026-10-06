@@ -641,11 +641,48 @@ app.get('/api/vendor/profile', authorizeVendor, async (req, res) => {
     }
 });
 
-// GET /api/vendor/orders (Strictly isolated to req.user.vendorId)
+// Helper: Automatically expire orders older than today's midnight that were left pending, preparing, or ready
+async function autoExpireStaleOrders() {
+    try {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const cutoffMs = startOfToday.getTime();
+
+        const [stale] = await db.query(
+            "SELECT id FROM orders WHERE status IN ('pending', 'preparing', 'ready') AND placed_at < ?",
+            [cutoffMs]
+        );
+
+        if (stale && stale.length > 0) {
+            console.log(`[Auto-Expire] Expiring ${stale.length} uncollected orders from previous days...`);
+            await db.query(
+                "UPDATE orders SET status = 'expired', cancel_reason = 'Auto-expired at day end' WHERE status IN ('pending', 'preparing', 'ready') AND placed_at < ?",
+                [cutoffMs]
+            );
+        }
+    } catch (err) {
+        console.warn('[Auto-Expire] Error expiring stale orders:', err.message);
+    }
+}
+
+// GET /api/vendor/orders (Strictly isolated to req.user.vendorId — defaults to TODAY's orders so old orders don't clutter the active dashboard)
 app.get('/api/vendor/orders', authorizeVendor, async (req, res) => {
     try {
         const vId = req.user.vendorId;
-        const [orders] = await db.query('SELECT * FROM orders WHERE vendor_id = ? ORDER BY placed_at DESC', [vId]);
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const cutoffMs = startOfToday.getTime();
+
+        // Expire any lingering uncollected orders from past days
+        await autoExpireStaleOrders();
+
+        const showAll = req.query.all === 'true';
+        const query = showAll
+            ? 'SELECT * FROM orders WHERE vendor_id = ? ORDER BY placed_at DESC'
+            : 'SELECT * FROM orders WHERE vendor_id = ? AND placed_at >= ? ORDER BY placed_at DESC';
+        const params = showAll ? [vId] : [vId, cutoffMs];
+
+        const [orders] = await db.query(query, params);
         const fullOrders = [];
 
         for (const order of orders) {
@@ -1017,6 +1054,8 @@ app.delete('/api/inventory/:id', authorize(['vendor']), async (req, res) => {
 // GET /api/orders (Student sees only student orders, Vendor sees only their vendor orders)
 app.get('/api/orders', async (req, res) => {
     try {
+        await autoExpireStaleOrders();
+
         let ordersQuery = 'SELECT * FROM orders ORDER BY placed_at DESC';
         let queryParams = [];
 
@@ -1318,16 +1357,12 @@ app.post('/api/orders', authorize(['student']), async (req, res) => {
             const targetVendorId = ord.vendor_id || ord.vendorId;
             io.to(`vendor:${targetVendorId}`).emit('order.created', eventPayload);
             io.to(`vendor_${targetVendorId}`).emit('order.created', eventPayload);
-            io.to(`vendor:${targetVendorId}`).emit('orders_updated', ord);
-            io.to(`vendor_${targetVendorId}`).emit('orders_updated', ord);
             if (studentUserId) {
                 io.to(`user:${studentUserId}`).emit('order.created', eventPayload);
             }
-            io.to(`student_${customer}`).emit('orders_updated', ord);
             io.to(`student_${customer}`).emit('order.created', eventPayload);
             const lowerCust = (customer || '').toLowerCase();
             if (lowerCust && lowerCust !== customer) {
-                io.to(`student_${lowerCust}`).emit('orders_updated', ord);
                 io.to(`student_${lowerCust}`).emit('order.created', eventPayload);
             }
             io.to(`order:${ord.id}`).emit('order.created', eventPayload);
@@ -1486,20 +1521,15 @@ async function handleOrderStatusUpdate(req, res) {
         // Targeted emission strictly to vendor room, student room, and order room
         io.to(`vendor:${targetVendorId}`).emit('order.status_changed', eventPayload);
         io.to(`vendor_${targetVendorId}`).emit('order.status_changed', eventPayload);
-        io.to(`vendor:${targetVendorId}`).emit('order_status_changed', updatedOrder);
-        io.to(`vendor_${targetVendorId}`).emit('order_status_changed', updatedOrder);
         if (currentOrder.user_id) {
             io.to(`user:${currentOrder.user_id}`).emit('order.status_changed', eventPayload);
         }
         io.to(`student_${currentOrder.customer}`).emit('order.status_changed', eventPayload);
-        io.to(`student_${currentOrder.customer}`).emit('order_status_changed', updatedOrder);
         const lowerOrderCust = (currentOrder.customer || '').toLowerCase();
         if (lowerOrderCust && lowerOrderCust !== currentOrder.customer) {
             io.to(`student_${lowerOrderCust}`).emit('order.status_changed', eventPayload);
-            io.to(`student_${lowerOrderCust}`).emit('order_status_changed', updatedOrder);
         }
         io.to(`order:${id}`).emit('order.status_changed', eventPayload);
-        io.to(`order:${id}`).emit('order_status_changed', updatedOrder);
 
         // Global real-time order status ping for cross-device synchronization
         io.emit('order_ping', {
@@ -2049,8 +2079,10 @@ async function startServer() {
         await db.initDB();
         await initNodemailer();
 
+        let triedAlt = false;
         server.on('error', (err) => {
-            if ((err.code === 'EACCES' || err.code === 'EADDRINUSE') && !server.listening) {
+            if ((err.code === 'EACCES' || err.code === 'EADDRINUSE') && !server.listening && !triedAlt) {
+                triedAlt = true;
                 console.log(`Port ${PORT} busy. Trying ${ALT_PORT}...`);
                 try { server.listen(ALT_PORT, '0.0.0.0'); } catch(e) {}
             } else {
@@ -2064,6 +2096,10 @@ async function startServer() {
             console.log(`  🏠 Local URL:    http://localhost:${PORT}`);
             console.log(`=================================================================\n`);
         });
+
+        // Expire uncollected orders from previous days on startup and periodically
+        await autoExpireStaleOrders();
+        setInterval(autoExpireStaleOrders, 15 * 60 * 1000);
 
         // Keep-Alive Self-Ping: Prevents Render free instances from sleeping during break times
         const PING_INTERVAL = 10 * 60 * 1000; // Every 10 mins

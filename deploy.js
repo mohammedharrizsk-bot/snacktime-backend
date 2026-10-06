@@ -40,7 +40,7 @@ console.log(` ✅ Updated index.html → v${newVersion} & asset query params v=$
 // 4. Run Firebase Deployment
 console.log(`📡 Deploying to Firebase Hosting live CDN...`);
 try {
-  execSync('npx firebase-tools deploy --only hosting', { stdio: 'inherit', cwd: rootDir });
+  execSync('npx.cmd firebase-tools deploy --only hosting', { stdio: 'inherit', cwd: rootDir });
   console.log(`\n🎉 DEPLOYMENT COMPLETE! All live browsers & installed PWAs will auto-reload to v${newVersion} within 15 seconds!`);
 } catch (err) {
   console.error('❌ Firebase deploy error:', err.message);

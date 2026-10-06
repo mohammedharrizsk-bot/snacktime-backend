@@ -186,32 +186,61 @@ function loadJSON() {
 async function mockQuery(sql, params = []) {
     const cleanSql = sql.replace(/\s+/g, ' ').trim();
 
-    // 1. SELECT id FROM users WHERE username = ?
-    if (cleanSql.includes('SELECT id FROM users WHERE username =')) {
-        const user = jsonData.users.find(u => u.username.toLowerCase() === (params[0] || '').toLowerCase());
-        return [user ? [{ id: user.id }] : []];
+    // 0. Transactions & Savepoints (no-ops for JSON engine)
+    if (cleanSql.startsWith('SAVEPOINT') || cleanSql.startsWith('ROLLBACK TO SAVEPOINT') || cleanSql.startsWith('RELEASE SAVEPOINT') || cleanSql === 'BEGIN' || cleanSql === 'COMMIT' || cleanSql === 'ROLLBACK') {
+        return [{}];
     }
 
-    // 2. SELECT * FROM users WHERE username = ?
-    if (cleanSql.includes('SELECT * FROM users WHERE username =')) {
-        const user = jsonData.users.find(u => u.username.toLowerCase() === (params[0] || '').toLowerCase());
-        return [user ? [user] : []];
+    // ==================== USERS ====================
+    if (cleanSql.includes('FROM users')) {
+        // SELECT id, vendor_id FROM users WHERE username = ?
+        if (cleanSql.includes('SELECT id, vendor_id FROM users WHERE')) {
+            const param = (params[0] || '').toLowerCase().trim();
+            const user = jsonData.users.find(u => (u.username && u.username.toLowerCase().trim() === param));
+            return [user ? [{ id: user.id, vendor_id: user.vendor_id }] : []];
+        }
+
+        // SELECT id FROM users WHERE LOWER(email) = ? OR LOWER(username) = ?
+        if (cleanSql.startsWith('SELECT id FROM users WHERE') || cleanSql.includes('SELECT id FROM users WHERE')) {
+            const param = (params[0] || '').toLowerCase().trim();
+            const user = jsonData.users.find(u => 
+                (u.username && u.username.toLowerCase().trim() === param) ||
+                (u.email && u.email.toLowerCase().trim() === param)
+            );
+            return [user ? [{ id: user.id }] : []];
+        }
+
+        // SELECT * FROM users WHERE ... (Login, OTP, Profile)
+        if (cleanSql.startsWith('SELECT') && cleanSql.includes('FROM users WHERE')) {
+            const p0 = (params[0] || '').toLowerCase().trim();
+            const p1 = (params[1] || p0).toLowerCase().trim();
+            const p2 = (params[2] || p0).toLowerCase().trim().replace(/[\s\-_]/g, '');
+            const user = jsonData.users.find(u => {
+                const uName = (u.username || '').toLowerCase().trim();
+                const uEmail = (u.email || '').toLowerCase().trim();
+                const uClean = uName.replace(/[\s\-_]/g, '');
+                return uName === p0 || uEmail === p0 || uClean === p0 ||
+                       uName === p1 || uEmail === p1 || uClean === p1 ||
+                       uName === p2 || uEmail === p2 || uClean === p2;
+            });
+            return [user ? [user] : []];
+        }
+
+        // SELECT * FROM users
+        if (cleanSql.startsWith('SELECT * FROM users')) {
+            return [jsonData.users];
+        }
     }
 
-    // 3. SELECT * FROM users WHERE email = ?
-    if (cleanSql.includes('SELECT * FROM users WHERE email =')) {
-        const user = jsonData.users.find(u => u.email.toLowerCase() === (params[0] || '').toLowerCase());
-        return [user ? [user] : []];
-    }
-
-    // 4. INSERT INTO users
+    // INSERT INTO users
     if (cleanSql.startsWith('INSERT INTO users')) {
         const newUser = {
             id: jsonData.users.length + 1,
             username: params[0],
             email: params[1],
             password_hash: params[2],
-            role: params[3],
+            role: params[3] || 'student',
+            vendor_id: params[4] || null,
             created_at: new Date().toISOString()
         };
         jsonData.users.push(newUser);
@@ -219,9 +248,10 @@ async function mockQuery(sql, params = []) {
         return [{ insertId: newUser.id }];
     }
 
-    // 5. UPDATE users SET password_hash = ? WHERE username = ?
+    // UPDATE users SET password_hash = ? WHERE LOWER(username) = ? or username = ?
     if (cleanSql.includes('UPDATE users SET password_hash =')) {
-        const user = jsonData.users.find(u => u.username === params[1]);
+        const target = (params[1] || '').toLowerCase().trim();
+        const user = jsonData.users.find(u => (u.username || '').toLowerCase().trim() === target);
         if (user) {
             user.password_hash = params[0];
             saveJSON();
@@ -229,12 +259,41 @@ async function mockQuery(sql, params = []) {
         return [{}];
     }
 
-    // 6. SELECT * FROM inventory
-    if (cleanSql.includes('SELECT * FROM inventory')) {
+    // ==================== INVENTORY ====================
+    if (cleanSql.includes('FROM inventory')) {
+        // SELECT * FROM inventory WHERE vendor_id = ?
+        if (cleanSql.includes('WHERE vendor_id =')) {
+            const vId = Number(params[0] || 1);
+            const items = jsonData.inventory.filter(i => Number(i.vendor_id || 1) === vId);
+            return [items];
+        }
+
+        // SELECT id, stock, name, price, vendor_id FROM inventory WHERE LOWER(name) = LOWER(?)
+        if (cleanSql.includes('LOWER(name) =')) {
+            const targetName = (params[0] || '').toLowerCase().trim();
+            const item = jsonData.inventory.find(i => (i.name || '').toLowerCase().trim() === targetName);
+            return [item ? [item] : []];
+        }
+
+        // SELECT id, stock, name, price, vendor_id FROM inventory WHERE id = ?
+        // or SELECT vendor_id FROM inventory WHERE id = ?
+        if (cleanSql.includes('WHERE id =')) {
+            const targetId = Number(params[0]);
+            const item = jsonData.inventory.find(i => Number(i.id) === targetId);
+            return [item ? [item] : []];
+        }
+
+        // SELECT stock, name FROM inventory WHERE id = ?
+        if (cleanSql.includes('SELECT stock, name FROM inventory')) {
+            const item = jsonData.inventory.find(i => Number(i.id) === Number(params[0]));
+            return [item ? [{ stock: item.stock, name: item.name }] : []];
+        }
+
+        // SELECT * FROM inventory
         return [jsonData.inventory];
     }
 
-    // 7. INSERT INTO inventory
+    // INSERT INTO inventory
     if (cleanSql.startsWith('INSERT INTO inventory')) {
         const newItem = {
             id: jsonData.inventory.length + 1,
@@ -242,6 +301,7 @@ async function mockQuery(sql, params = []) {
             price: Number(params[1]),
             stock: Number(params[2]),
             sold: 0,
+            vendor_id: Number(params[3] || 1),
             is_special: false,
             original_price: null
         };
@@ -250,7 +310,42 @@ async function mockQuery(sql, params = []) {
         return [{ insertId: newItem.id }];
     }
 
-    // 8. UPDATE inventory SET stock = ? WHERE id = ?
+    // UPDATE inventory SET stock = GREATEST(0, stock - ?), sold = sold + ? WHERE id = ?
+    if (cleanSql.includes('UPDATE inventory SET stock = GREATEST(0, stock -') || cleanSql.includes('UPDATE inventory SET stock = stock -')) {
+        const qty = Number(params[0]);
+        const targetId = Number(params[2]);
+        const item = jsonData.inventory.find(i => Number(i.id) === targetId);
+        if (item) {
+            item.stock = Math.max(0, item.stock - qty);
+            item.sold = (item.sold || 0) + Number(params[1]);
+            saveJSON();
+        }
+        return [{}];
+    }
+
+    // UPDATE inventory SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?
+    if (cleanSql.includes('UPDATE inventory SET stock = stock +')) {
+        if (cleanSql.includes('name =')) {
+            const item = jsonData.inventory.find(i => i.name === params[1]);
+            if (item) {
+                item.stock = item.stock + Number(params[0]);
+                saveJSON();
+            }
+        } else {
+            const targetId = Number(params[params.length - 1]);
+            const item = jsonData.inventory.find(i => Number(i.id) === targetId);
+            if (item) {
+                item.stock = item.stock + Number(params[0]);
+                if (params.length >= 3) {
+                    item.sold = Math.max(0, (item.sold || 0) - Number(params[1]));
+                }
+                saveJSON();
+            }
+        }
+        return [{}];
+    }
+
+    // UPDATE inventory SET stock = ? WHERE id = ?
     if (cleanSql.includes('UPDATE inventory SET stock = ? WHERE id = ?')) {
         const item = jsonData.inventory.find(i => Number(i.id) === Number(params[1]));
         if (item) {
@@ -260,7 +355,7 @@ async function mockQuery(sql, params = []) {
         return [{}];
     }
 
-    // 9. UPDATE inventory SET price = ? WHERE id = ?
+    // UPDATE inventory SET price = ? WHERE id = ?
     if (cleanSql.includes('UPDATE inventory SET price = ? WHERE id = ?')) {
         const item = jsonData.inventory.find(i => Number(i.id) === Number(params[1]));
         if (item) {
@@ -270,129 +365,169 @@ async function mockQuery(sql, params = []) {
         return [{}];
     }
 
-    // 10. DELETE FROM inventory WHERE id = ?
+    // DELETE FROM inventory WHERE id = ?
     if (cleanSql.includes('DELETE FROM inventory WHERE id = ?')) {
         jsonData.inventory = jsonData.inventory.filter(i => Number(i.id) !== Number(params[0]));
         saveJSON();
         return [{}];
     }
 
-    // 11. SELECT * FROM orders WHERE id = ?
-    if (cleanSql.includes('SELECT * FROM orders WHERE id =')) {
+    // ==================== ORDERS ====================
+    // SELECT MAX(token) as max_token FROM orders WHERE vendor_id = ? AND placed_at >= ?
+    if (cleanSql.includes('SELECT MAX(token)') || cleanSql.includes('MAX(token)')) {
+        const targetVendorId = Number(params[0] || 1);
+        const minPlacedAt = Number(params[1] || 0);
+        const matching = jsonData.orders.filter(o => 
+            Number(o.vendor_id || 1) === targetVendorId && 
+            Number(o.placed_at || 0) >= minPlacedAt &&
+            o.token != null
+        );
+        const maxToken = matching.reduce((max, o) => Math.max(max, Number(o.token) || 0), 0);
+        return [[{ max_token: maxToken || null }]];
+    }
+
+    // Queue ahead count: SELECT COUNT(*) AS count FROM orders WHERE status IN ('pending', 'preparing') AND placed_at < ? AND vendor_id = ?
+    if (cleanSql.includes('SELECT COUNT(*) AS count FROM orders') || cleanSql.includes('COUNT(*) AS count FROM orders')) {
+        const placedCutoff = Number(params[0] || 0);
+        const targetVendorId = Number(params[1] || 1);
+        const count = jsonData.orders.filter(o =>
+            ['pending', 'preparing'].includes(o.status) &&
+            Number(o.placed_at) < placedCutoff &&
+            Number(o.vendor_id || 1) === targetVendorId
+        ).length;
+        return [[{ count }]];
+    }
+
+    // SELECT id FROM orders WHERE status IN ('pending', 'preparing', 'ready') AND placed_at < ?
+    if (cleanSql.includes('SELECT id FROM orders WHERE') && cleanSql.includes('placed_at <')) {
+        const cutoff = Number(params[0]);
+        const stale = jsonData.orders
+            .filter(o => ['pending', 'preparing', 'ready'].includes(o.status) && Number(o.placed_at) < cutoff)
+            .map(o => ({ id: o.id }));
+        return [stale];
+    }
+
+    // UPDATE orders SET status = 'expired', cancel_reason = ... WHERE status IN ... AND placed_at < ?
+    if (cleanSql.includes("UPDATE orders SET status = 'expired'") || cleanSql.includes('UPDATE orders SET status = "expired"')) {
+        const cutoff = Number(params[0]);
+        jsonData.orders.forEach(o => {
+            if (['pending', 'preparing', 'ready'].includes(o.status) && Number(o.placed_at) < cutoff) {
+                o.status = 'expired';
+                o.cancel_reason = 'Auto-expired at day end';
+            }
+        });
+        saveJSON();
+        return [{}];
+    }
+
+    // Orders by customer: SELECT * FROM orders WHERE LOWER(customer) = LOWER(?) ORDER BY placed_at DESC
+    if (cleanSql.includes('FROM orders WHERE LOWER(customer) =')) {
+        const targetCust = (params[0] || '').toLowerCase().trim();
+        const orders = jsonData.orders.filter(o => (o.customer || '').toLowerCase().trim() === targetCust);
+        const sorted = [...orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
+        return [sorted];
+    }
+
+    // Orders by vendor_id with placed_at: SELECT * FROM orders WHERE vendor_id = ? AND placed_at >= ?
+    if (cleanSql.includes('FROM orders WHERE vendor_id =') && cleanSql.includes('placed_at >=')) {
+        const vId = Number(params[0] || 1);
+        const minPlaced = Number(params[1] || 0);
+        const orders = jsonData.orders.filter(o => Number(o.vendor_id || 1) === vId && Number(o.placed_at) >= minPlaced);
+        const sorted = [...orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
+        return [sorted];
+    }
+
+    // Orders by vendor_id: SELECT * FROM orders WHERE vendor_id = ?
+    if (cleanSql.includes('FROM orders WHERE vendor_id =')) {
+        const vId = Number(params[0] || 1);
+        const orders = jsonData.orders.filter(o => Number(o.vendor_id || 1) === vId);
+        const sorted = [...orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
+        return [sorted];
+    }
+
+    // Orders by ID: SELECT * FROM orders WHERE id = ?
+    // or SELECT id, status, token FROM orders WHERE id = ?
+    // or SELECT vendor_id, status FROM orders WHERE id = ?
+    if (cleanSql.includes('FROM orders WHERE id =')) {
         const order = jsonData.orders.find(o => o.id === params[0]);
         return [order ? [order] : []];
     }
 
-    // 11b. SELECT * FROM orders
+    // SELECT * FROM orders
     if (cleanSql.includes('SELECT * FROM orders')) {
         const sorted = [...jsonData.orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
         return [sorted];
     }
 
-    // 12. SELECT * FROM order_items WHERE order_id = ?
-    if (cleanSql.includes('SELECT * FROM order_items WHERE order_id =')) {
-        const items = jsonData.order_items.filter(oi => oi.order_id === params[0]);
-        return [items];
-    }
-
-    // 13. SELECT stock, name FROM inventory WHERE id = ?
-    if (cleanSql.includes('SELECT stock, name FROM inventory WHERE id =')) {
-        const item = jsonData.inventory.find(i => Number(i.id) === Number(params[0]));
-        return [item ? [{ stock: item.stock, name: item.name }] : []];
-    }
-
-    // 14. UPDATE inventory SET stock = stock - ?, sold = sold + ? WHERE id = ?
-    if (cleanSql.includes('UPDATE inventory SET stock = stock -')) {
-        const item = jsonData.inventory.find(i => Number(i.id) === Number(params[2]));
-        if (item) {
-            item.stock = Math.max(0, item.stock - Number(params[0]));
-            item.sold = item.sold + Number(params[1]);
-            saveJSON();
-        }
-        return [{}];
-    }
-
-    // 15. INSERT INTO orders
+    // INSERT INTO orders
     if (cleanSql.startsWith('INSERT INTO orders')) {
-        const newOrder = {
-            id: params[0],
-            customer: params[1],
-            total: Number(params[2]),
-            status: params[3],
-            time: params[4],
-            placed_at: Number(params[5]),
-            method: params[6],
-            token: params[7],
-            payment_id: params[8],
-            rating: null,
-            feedback: null,
-            cancel_reason: null
-        };
+        let newOrder;
+        if (params.length >= 12) {
+            newOrder = {
+                id: params[0],
+                user_id: params[1],
+                vendor_id: Number(params[2] || 1),
+                master_order_id: params[3] || null,
+                customer: params[4],
+                total: Number(params[5]),
+                status: params[6],
+                time: params[7],
+                placed_at: Number(params[8]),
+                method: params[9],
+                token: params[10],
+                payment_id: params[11] || null,
+                version: Number(params[12] || 1),
+                rating: null,
+                feedback: null,
+                cancel_reason: null
+            };
+        } else {
+            newOrder = {
+                id: params[0],
+                customer: params[1],
+                total: Number(params[2]),
+                status: params[3],
+                time: params[4],
+                placed_at: Number(params[5]),
+                method: params[6],
+                token: params[7],
+                payment_id: params[8] || null,
+                vendor_id: 1,
+                user_id: null,
+                master_order_id: null,
+                version: 1,
+                rating: null,
+                feedback: null,
+                cancel_reason: null
+            };
+        }
         jsonData.orders.push(newOrder);
         saveJSON();
         return [{}];
     }
 
-    // 16. INSERT INTO order_items
-    if (cleanSql.startsWith('INSERT INTO order_items')) {
-        const newItem = {
-            order_id: params[0],
-            item_id: Number(params[1]),
-            name: params[2],
-            qty: Number(params[3]),
-            price: Number(params[4])
-        };
-        jsonData.order_items.push(newItem);
-        saveJSON();
-        return [{}];
-    }
-
-    // 17. UPDATE inventory SET stock = stock + ? WHERE name = ? or id = ?
-    if (cleanSql.includes('UPDATE inventory SET stock = stock +')) {
-        if (cleanSql.includes('name =')) {
-            const item = jsonData.inventory.find(i => i.name === params[1]);
-            if (item) {
-                item.stock = item.stock + Number(params[0]);
-                saveJSON();
-            }
-        } else {
-            const targetId = params.length >= 3 ? params[2] : params[1];
-            const item = jsonData.inventory.find(i => Number(i.id) === Number(targetId));
-            if (item) {
-                item.stock = item.stock + Number(params[0]);
-                if (params.length >= 3) {
-                    item.sold = Math.max(0, item.sold - Number(params[1]));
-                }
-                saveJSON();
-            }
-        }
-        return [{}];
-    }
-
-    // 18. UPDATE orders SET status = ?, cancel_reason = ? WHERE id = ?
-    if (cleanSql.includes('UPDATE orders SET status =') && cleanSql.includes('cancel_reason =')) {
-        const order = jsonData.orders.find(o => o.id === params[2]);
+    // UPDATE orders SET status = ?, cancel_reason = ?, version = ? WHERE id = ?
+    // or UPDATE orders SET status = ? WHERE id = ?
+    if (cleanSql.startsWith('UPDATE orders SET status =')) {
+        const targetId = params[params.length - 1];
+        const order = jsonData.orders.find(o => o.id === targetId);
         if (order) {
             order.status = params[0];
-            order.cancel_reason = params[1];
+            if (cleanSql.includes('cancel_reason')) {
+                order.cancel_reason = params[1];
+            }
+            if (cleanSql.includes('version')) {
+                order.version = (order.version || 1) + 1;
+            }
             saveJSON();
         }
         return [{}];
     }
 
-    // 19. UPDATE orders SET status = ? WHERE id = ?
-    if (cleanSql.includes('UPDATE orders SET status =') && !cleanSql.includes('cancel_reason')) {
-        const order = jsonData.orders.find(o => o.id === params[1]);
-        if (order) {
-            order.status = params[0];
-            saveJSON();
-        }
-        return [{}];
-    }
-
-    // 20. UPDATE orders SET rating = ?, feedback = ? WHERE id = ?
+    // UPDATE orders SET rating = ?, feedback = ? WHERE id = ?
     if (cleanSql.includes('UPDATE orders SET rating =')) {
-        const order = jsonData.orders.find(o => o.id === params[2]);
+        const targetId = params[params.length - 1];
+        const order = jsonData.orders.find(o => o.id === targetId);
         if (order) {
             order.rating = Number(params[0]);
             order.feedback = params[1];
@@ -401,60 +536,130 @@ async function mockQuery(sql, params = []) {
         return [{}];
     }
 
-    // 21. INSERT INTO reviews
-    if (cleanSql.startsWith('INSERT INTO reviews') || cleanSql.startsWith('INSERT INTO Reviews')) {
-        const newReview = {
-            id: jsonData.reviews.length + 1,
+    // ==================== ORDER_ITEMS ====================
+    // SELECT * FROM order_items WHERE order_id = ?
+    if (cleanSql.includes('FROM order_items WHERE order_id =')) {
+        const items = jsonData.order_items.filter(oi => oi.order_id === params[0]);
+        return [items];
+    }
+
+    // INSERT INTO order_items
+    if (cleanSql.startsWith('INSERT INTO order_items')) {
+        const newItem = {
             order_id: params[0],
-            customer: params[1],
-            items: params[2],
-            rating: Number(params[3]),
-            feedback: params[4],
-            time: params[5]
+            item_id: Number(params[1]),
+            name: params[2],
+            qty: Number(params[3]),
+            price: Number(params[4]),
+            vendor_id: Number(params[5] || 1)
         };
-        jsonData.reviews.push(newReview);
+        jsonData.order_items.push(newItem);
         saveJSON();
         return [{}];
     }
 
-    // 22. SELECT * FROM reviews
+    // ==================== REVIEWS ====================
+    if (cleanSql.includes('FROM reviews WHERE order_id =')) {
+        const review = jsonData.reviews.find(r => r.order_id === params[0]);
+        return [review ? [{ id: review.id }] : []];
+    }
+
+    if (cleanSql.includes('FROM reviews WHERE vendor_id =')) {
+        const reviews = jsonData.reviews.filter(r => Number(r.vendor_id || 1) === Number(params[0]));
+        const sorted = [...reviews].sort((a,b) => b.id - a.id);
+        return [sorted];
+    }
+
     if (cleanSql.includes('SELECT * FROM reviews')) {
         const sorted = [...jsonData.reviews].sort((a,b) => b.id - a.id);
         return [sorted];
     }
 
-    // 23. SELECT * FROM settings
+    if (cleanSql.startsWith('INSERT INTO reviews') || cleanSql.startsWith('INSERT INTO Reviews')) {
+        let newRev;
+        if (params.length >= 7) {
+            newRev = {
+                id: jsonData.reviews.length + 1,
+                order_id: params[0],
+                vendor_id: Number(params[1] || 1),
+                customer: params[2],
+                items: params[3],
+                rating: Number(params[4]),
+                feedback: params[5],
+                time: params[6]
+            };
+        } else {
+            newRev = {
+                id: jsonData.reviews.length + 1,
+                order_id: params[0],
+                vendor_id: 1,
+                customer: params[1],
+                items: params[2],
+                rating: Number(params[3]),
+                feedback: params[4],
+                time: params[5]
+            };
+        }
+        jsonData.reviews.push(newRev);
+        saveJSON();
+        return [{}];
+    }
+
+    // ==================== SETTINGS & VENDORS ====================
+    if (cleanSql.includes('FROM vendors WHERE id =')) {
+        const vendor = jsonData.vendors.find(v => Number(v.id) === Number(params[0]));
+        return [vendor ? [vendor] : []];
+    }
+
+    if (cleanSql.includes('FROM vendors')) {
+        return [jsonData.vendors];
+    }
+
+    if (cleanSql.includes('UPDATE vendors SET')) {
+        const targetId = Number(params[params.length - 1]);
+        const vendor = jsonData.vendors.find(v => Number(v.id) === targetId);
+        if (vendor) {
+            if (cleanSql.includes('shop_status = ?') && cleanSql.includes('break_end_time = ?')) {
+                vendor.shop_status = params[0];
+                vendor.break_end_time = params[1];
+            } else if (cleanSql.includes('shop_status = "open"') && cleanSql.includes('break_end_time = ?')) {
+                vendor.shop_status = 'open';
+                vendor.break_end_time = params[0];
+            } else if (cleanSql.includes('break_end_time = NULL')) {
+                vendor.break_end_time = null;
+            } else if (cleanSql.includes('shop_status = ?')) {
+                vendor.shop_status = params[0];
+            }
+            saveJSON();
+        }
+        return [{}];
+    }
+
     if (cleanSql.includes('SELECT * FROM settings')) {
         return [jsonData.settings];
     }
 
-    // 24. UPDATE settings SET setting_value = ? WHERE setting_key = "shop_status"
-    if (cleanSql.includes('UPDATE settings SET setting_value =') && cleanSql.includes('shop_status')) {
-        const setting = jsonData.settings.find(s => s.setting_key === 'shop_status');
-        if (setting) {
-            setting.setting_value = params[0];
-            saveJSON();
-        }
-        return [{}];
-    }
-
-    // 25. UPDATE settings SET setting_value = ? WHERE setting_key = "break_end_time"
-    if (cleanSql.includes('UPDATE settings SET setting_value =') && cleanSql.includes('break_end_time')) {
-        const setting = jsonData.settings.find(s => s.setting_key === 'break_end_time');
-        if (setting) {
-            setting.setting_value = params[0];
-            saveJSON();
-        }
-        return [{}];
-    }
-
-    // 26. SELECT setting_value FROM settings WHERE setting_key = "shop_status"
     if (cleanSql.includes('SELECT setting_value FROM settings WHERE setting_key = "shop_status"')) {
         const setting = jsonData.settings.find(s => s.setting_key === 'shop_status');
         return [setting ? [setting] : []];
     }
 
-    // 27. INSERT INTO support_tickets
+    if (cleanSql.includes('UPDATE settings SET setting_value =')) {
+        if (cleanSql.includes('"shop_status"')) {
+            const val = cleanSql.includes('"open"') ? 'open' : params[0];
+            const setting = jsonData.settings.find(s => s.setting_key === 'shop_status');
+            if (setting) setting.setting_value = val;
+            saveJSON();
+        } else if (cleanSql.includes('"break_end_time"')) {
+            const val = cleanSql.includes('"null"') ? 'null' : params[0];
+            const setting = jsonData.settings.find(s => s.setting_key === 'break_end_time');
+            if (setting) setting.setting_value = val;
+            saveJSON();
+        }
+        return [{}];
+    }
+
+    // ==================== SUPPORT TICKETS ====================
     if (cleanSql.startsWith('INSERT INTO support_tickets')) {
         const newTicket = {
             id: jsonData.support_tickets.length + 1,
@@ -469,49 +674,8 @@ async function mockQuery(sql, params = []) {
         return [{ insertId: newTicket.id }];
     }
 
-    // 29. SELECT * FROM vendors
-    if (cleanSql.includes('SELECT * FROM vendors WHERE id =')) {
-        const vendor = jsonData.vendors.find(v => Number(v.id) === Number(params[0]));
-        return [vendor ? [vendor] : []];
-    }
-    if (cleanSql.includes('SELECT * FROM vendors')) {
-        return [jsonData.vendors];
-    }
-
-    // 30. UPDATE vendors SET shop_status = ?, break_end_time = ? WHERE id = ?
-    if (cleanSql.includes('UPDATE vendors SET shop_status =') || cleanSql.includes('UPDATE vendors SET')) {
-        const targetId = params[params.length - 1];
-        const vendor = jsonData.vendors.find(v => Number(v.id) === Number(targetId));
-        if (vendor) {
-            if (params.length >= 3) {
-                vendor.shop_status = params[0];
-                vendor.break_end_time = params[1];
-            } else if (params.length === 2) {
-                vendor.shop_status = params[0];
-            }
-            saveJSON();
-        }
-        return [{}];
-    }
-
-    // 31. Inventory by vendor_id
-    if (cleanSql.includes('FROM inventory WHERE vendor_id =')) {
-        const items = jsonData.inventory.filter(i => Number(i.vendor_id || 1) === Number(params[0]));
-        return [items];
-    }
-
-    // 32. Orders by vendor_id
-    if (cleanSql.includes('FROM orders WHERE vendor_id =')) {
-        const orders = jsonData.orders.filter(o => Number(o.vendor_id || 1) === Number(params[0]));
-        const sorted = [...orders].sort((a,b) => Number(b.placed_at) - Number(a.placed_at));
-        return [sorted];
-    }
-
-    // 33. Reviews by vendor_id
-    if (cleanSql.includes('FROM reviews WHERE vendor_id =')) {
-        const reviews = jsonData.reviews.filter(r => Number(r.vendor_id || 1) === Number(params[0]));
-        const sorted = [...reviews].sort((a,b) => b.id - a.id);
-        return [sorted];
+    if (cleanSql.includes('FROM support_tickets')) {
+        return [jsonData.support_tickets];
     }
 
     console.warn("⚠️ Unmatched SQL query in mock JSON parser:", cleanSql);

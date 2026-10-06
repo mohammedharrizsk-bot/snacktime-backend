@@ -22,9 +22,8 @@ function loadEnv() {
 }
 loadEnv();
 
-// PostgreSQL & MySQL Connection Configuration
-const DEFAULT_PG_URL = 'postgresql://snacktime_user:PT1ICFTuGctt8QS7da3FmVWMMJ8bLw33@dpg-dadeph2fngtc73b3vv7g-a.singapore-postgres.render.com:5432/snacktime';
-const POSTGRES_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || DEFAULT_PG_URL;
+// PostgreSQL & Supabase Connection Configuration
+const POSTGRES_URL = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || process.env.POSTGRES_URL || '';
 
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
@@ -707,12 +706,12 @@ async function initDB() {
             });
             await pgPool.query('SELECT NOW()');
             currentEngine = 'pg';
-            console.log('🐘 Connected to Cloud PostgreSQL Database successfully!');
+            console.log('🐘 Connected to Cloud PostgreSQL / Supabase Database successfully!');
             await createPgTables();
             await seedPgDatabase();
             return;
         } catch (e) {
-            console.warn('⚠️ Cloud PostgreSQL connection notice:', e.message);
+            console.warn('⚠️ Cloud PostgreSQL / Supabase connection notice:', e.message);
         }
     }
 
